@@ -49,45 +49,52 @@ dependencies {
         // GraphQL Platform
         api("com.graphql-java:graphql-java") {
             version {
-                strictly("[19.5, 20[")
-                prefer("19.5")
-                reject("18.2")
+                require("22.3")
+                reject("[20.6, 19.5, 18.2]")
+            }
+
+        }
+        api("com.graphql-java:java-dataloader") {
+            version {
+                require("3.3.0")
+                reject("[3.2.1]")
             }
 
         }
         api("com.graphql-java:graphql-java-extended-scalars") {
             version {
-                 strictly("[19.1, 20[")
-                 prefer("19.1")
-                 reject("18.2")
+                require("22.0")
+                 reject("20.2")
             }
         }
         api("com.graphql-java:graphql-java-extended-validation") {
-            version { strictly("19.1") }
+            version { require("22.0") }
         }
         api("com.apollographql.federation:federation-graphql-java-support") {
             version {
-                strictly("[2.0, 2.2[")
-                prefer("2.1.0")
+                require("5.2.0")
             }
         }
         // ---
         api("com.jayway.jsonpath:json-path") {
-            version { require("2.7.0") }
+            version { require("2.9.0") }
         }
         api("io.projectreactor:reactor-core") {
-            version { require("3.4.22") }
+            version { require("3.6.1") }
         }
         api("io.projectreactor:reactor-test"){
-            version { require("3.4.22") }
+            version { require("3.6.1") }
         }
         // CVEs
-        api("org.apache.logging.log4j:log4j-to-slf4j:2.19.0") {
+        api("org.apache.logging.log4j:log4j-to-slf4j:2.24.3") {
             because("Refer to CVE-2021-44228; https://cve.mitre.org/cgi-bin/cvename.cgi?name=CVE-2021-44228")
          }
-         api("org.apache.logging.log4j:log4j-api:2.19.0") {
+         api("org.apache.logging.log4j:log4j-api:2.23.1") {
             because("Refer to CVE-2021-44228; https://cve.mitre.org/cgi-bin/cvename.cgi?name=CVE-2021-44228")
          }
+        api("io.micrometer:context-propagation") {
+            version { require("1.1.1") }
+        }
     }
 }
 
@@ -97,7 +104,9 @@ dependencies {
 // The following internal modules will be excluded from the BOM
 val ignoreInternalModules by extra(
     listOf(
-        project(":graphql-dgs-example-java"),
+        project(":graphql-dgs-example-shared"),
+        project(":graphql-dgs-spring-graphql-example-java"),
+        project(":graphql-dgs-spring-graphql-example-java-webflux"),
         project(":graphql-dgs-platform-dependencies")
     )
 )
@@ -112,9 +121,8 @@ afterEvaluate {
     project.dependencies {
         constraints {
             subprojectRecommendations.forEach {
-                logger.info("Adding ${it} as constraint.")
+                logger.info("Adding {} as constraint.", it)
                 api(it)
-
             }
         }
     }

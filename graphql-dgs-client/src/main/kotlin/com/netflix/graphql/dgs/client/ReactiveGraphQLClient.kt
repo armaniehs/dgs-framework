@@ -16,6 +16,7 @@
 
 package com.netflix.graphql.dgs.client
 
+import org.intellij.lang.annotations.Language
 import reactor.core.publisher.Flux
 
 /**
@@ -28,8 +29,8 @@ interface ReactiveGraphQLClient {
      * @return A [Flux] of [GraphQLResponse]. [GraphQLResponse] parses the response and gives easy access to data and errors.
      */
     fun reactiveExecuteQuery(
-        query: String,
-        variables: Map<String, Any>
+        @Language("graphql") query: String,
+        variables: Map<String, Any>,
     ): Flux<GraphQLResponse>
 
     /**
@@ -39,8 +40,8 @@ interface ReactiveGraphQLClient {
      * @return A [Flux] of [GraphQLResponse]. [GraphQLResponse] parses the response and gives easy access to data and errors.
      */
     fun reactiveExecuteQuery(
-        query: String,
+        @Language("graphql") query: String,
         variables: Map<String, Any>,
-        operationName: String?
+        operationName: String?,
     ): Flux<GraphQLResponse>
 }

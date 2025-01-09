@@ -24,7 +24,6 @@ import org.springframework.boot.test.context.runner.ApplicationContextRunner
 import org.springframework.context.annotation.Configuration
 
 internal class DgsGraphQLMetricsPropertiesTest {
-
     private val contextRunner =
         ApplicationContextRunner()
             .withConfiguration(AutoConfigurations.of(TestConfiguration::class.java))
@@ -36,12 +35,16 @@ internal class DgsGraphQLMetricsPropertiesTest {
 
             assertThat(props).isNotNull
             assertThat(props.autotime.isEnabled).isTrue
-            assertThat(props.autotimeProperties.percentiles).isNull()
-            assertThat(props.autotimeProperties.isPercentilesHistogram).isFalse
+            assertThat(props.autotime.percentiles).isNull()
+            assertThat(props.autotime.isPercentilesHistogram).isFalse
 
             assertThat(props.tags).isNotNull
             assertThat(props.tags.limiter.kind).isEqualTo(DgsGraphQLMetricsProperties.CardinalityLimiterKind.FIRST)
             assertThat(props.tags.limiter.limit).isEqualTo(100)
+            assertThat(props.tags.complexity.enabled).isTrue()
+
+            assertThat(props.resolver.enabled).isTrue()
+            assertThat(props.query.enabled).isTrue()
         }
     }
 
@@ -50,7 +53,7 @@ internal class DgsGraphQLMetricsPropertiesTest {
         contextRunner
             .withPropertyValues(
                 "management.metrics.dgs-graphql.tags.limiter.kind=FREQUENCY",
-                "management.metrics.dgs-graphql.tags.limiter.limit=500"
+                "management.metrics.dgs-graphql.tags.limiter.limit=500",
             ).run { ctx ->
                 val props = ctx.getBean(DgsGraphQLMetricsProperties::class.java)
 
@@ -60,7 +63,64 @@ internal class DgsGraphQLMetricsPropertiesTest {
             }
     }
 
-    @Configuration
+    @Test
+    fun `Can disable complexity tag`() {
+        contextRunner
+            .withPropertyValues(
+                "management.metrics.dgs-graphql.tags.complexity.enabled=false",
+            ).run { ctx ->
+                val props = ctx.getBean(DgsGraphQLMetricsProperties::class.java)
+
+                assertThat(props.tags.complexity.enabled).isFalse()
+            }
+    }
+
+    @Test
+    fun `Can disable resolver metric`() {
+        contextRunner
+            .withPropertyValues(
+                "management.metrics.dgs-graphql.resolver.enabled=false",
+            ).run { ctx ->
+                val props = ctx.getBean(DgsGraphQLMetricsProperties::class.java)
+
+                assertThat(props.resolver.enabled).isFalse()
+            }
+    }
+
+    @Test
+    fun `Can disable query metric`() {
+        contextRunner
+            .withPropertyValues(
+                "management.metrics.dgs-graphql.query.enabled=false",
+            ).run { ctx ->
+                val props = ctx.getBean(DgsGraphQLMetricsProperties::class.java)
+
+                assertThat(props.query.enabled).isFalse()
+            }
+    }
+
+    @Test
+    fun `can override autotime configuration`() {
+        contextRunner
+            .withPropertyValues(
+                "management.metrics.dgs-graphql.autotime.percentiles-histogram=true",
+                "management.metrics.dgs-graphql.autotime.percentiles=0.50,0.95,0.99",
+            ).run { ctx ->
+                val props = ctx.getBean(DgsGraphQLMetricsProperties::class.java)
+                assertThat(props.autotime.isPercentilesHistogram).isTrue()
+                assertThat(props.autotime.percentiles).isEqualTo(doubleArrayOf(0.50, 0.95, 0.99))
+            }
+
+        contextRunner
+            .withPropertyValues(
+                "management.metrics.dgs-graphql.autotime.enabled=false",
+            ).run { ctx ->
+                val props = ctx.getBean(DgsGraphQLMetricsProperties::class.java)
+                assertThat(props.autotime.isEnabled).isFalse()
+            }
+    }
+
+    @Configuration(proxyBeanMethods = false)
     @EnableConfigurationProperties(DgsGraphQLMetricsProperties::class)
     open class TestConfiguration
 }

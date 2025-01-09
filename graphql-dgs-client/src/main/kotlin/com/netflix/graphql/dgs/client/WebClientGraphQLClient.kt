@@ -16,9 +16,10 @@
 
 package com.netflix.graphql.dgs.client
 
+import com.fasterxml.jackson.databind.ObjectMapper
 import org.intellij.lang.annotations.Language
 import org.springframework.http.HttpHeaders
-import org.springframework.http.HttpStatus
+import org.springframework.http.ResponseEntity
 import org.springframework.web.reactive.function.client.WebClient
 import org.springframework.web.reactive.function.client.WebClient.RequestBodySpec
 import org.springframework.web.reactive.function.client.toEntity
@@ -41,20 +42,26 @@ import java.util.function.Consumer
  */
 class WebClientGraphQLClient(
     private val webclient: WebClient,
-    private val headersConsumer: Consumer<HttpHeaders>
+    private val headersConsumer: Consumer<HttpHeaders>,
+    private val mapper: ObjectMapper,
 ) : MonoGraphQLClient {
-
     constructor(webclient: WebClient) : this(webclient, Consumer {})
+
+    constructor(webclient: WebClient, headersConsumer: Consumer<HttpHeaders>) : this(
+        webclient,
+        headersConsumer,
+        GraphQLClients.objectMapper,
+    )
+
+    constructor(webclient: WebClient, mapper: ObjectMapper) : this(webclient, Consumer {}, mapper)
 
     /**
      * @param query The query string. Note that you can use [code generation](https://netflix.github.io/dgs/generating-code-from-schema/#generating-query-apis-for-external-services) for a type safe query!
      * @return A [Mono] of [GraphQLResponse]. [GraphQLResponse] parses the response and gives easy access to data and errors.
      */
     override fun reactiveExecuteQuery(
-        @Language("graphql") query: String
-    ): Mono<GraphQLResponse> {
-        return reactiveExecuteQuery(query, emptyMap(), null)
-    }
+        @Language("graphql") query: String,
+    ): Mono<GraphQLResponse> = reactiveExecuteQuery(query, emptyMap(), null)
 
     /**
      * @param query The query string. Note that you can use [code generation](https://netflix.github.io/dgs/generating-code-from-schema/#generating-query-apis-for-external-services) for a type safe query!
@@ -63,10 +70,8 @@ class WebClientGraphQLClient(
      */
     override fun reactiveExecuteQuery(
         @Language("graphql") query: String,
-        variables: Map<String, Any>
-    ): Mono<GraphQLResponse> {
-        return reactiveExecuteQuery(query, variables, null)
-    }
+        variables: Map<String, Any>,
+    ): Mono<GraphQLResponse> = reactiveExecuteQuery(query, variables, null)
 
     /**
      * @param query The query string. Note that you can use [code generation](https://netflix.github.io/dgs/generating-code-from-schema/#generating-query-apis-for-external-services) for a type safe query!
@@ -77,10 +82,8 @@ class WebClientGraphQLClient(
     override fun reactiveExecuteQuery(
         @Language("graphql") query: String,
         variables: Map<String, Any>,
-        operationName: String?
-    ): Mono<GraphQLResponse> {
-        return reactiveExecuteQuery(query, variables, operationName, REQUEST_BODY_URI_CUSTOMIZER_IDENTITY)
-    }
+        operationName: String?,
+    ): Mono<GraphQLResponse> = reactiveExecuteQuery(query, variables, operationName, REQUEST_BODY_URI_CUSTOMIZER_IDENTITY)
 
     /**
      * @param query The query string. Note that you can use [code generation](https://netflix.github.io/dgs/generating-code-from-schema/#generating-query-apis-for-external-services) for a type safe query!
@@ -91,10 +94,8 @@ class WebClientGraphQLClient(
      */
     fun reactiveExecuteQuery(
         @Language("graphql") query: String,
-        requestBodyUriCustomizer: RequestBodyUriCustomizer
-    ): Mono<GraphQLResponse> {
-        return reactiveExecuteQuery(query, emptyMap(), null, requestBodyUriCustomizer)
-    }
+        requestBodyUriCustomizer: RequestBodyUriCustomizer,
+    ): Mono<GraphQLResponse> = reactiveExecuteQuery(query, emptyMap(), null, requestBodyUriCustomizer)
 
     /**
      * @param query The query string. Note that you can use [code generation](https://netflix.github.io/dgs/generating-code-from-schema/#generating-query-apis-for-external-services) for a type safe query!
@@ -109,41 +110,37 @@ class WebClientGraphQLClient(
         @Language("graphql") query: String,
         variables: Map<String, Any>,
         operationName: String?,
-        requestBodyUriCustomizer: RequestBodyUriCustomizer
+        requestBodyUriCustomizer: RequestBodyUriCustomizer,
     ): Mono<GraphQLResponse> {
-        @Suppress("BlockingMethodInNonBlockingContext")
-        val serializedRequest = GraphQLClients.objectMapper.writeValueAsString(
-            Request(
-                query,
-                variables,
-                operationName
+        val serializedRequest =
+            mapper.writeValueAsString(
+                GraphQLClients.toRequestMap(query = query, operationName = operationName, variables = variables),
             )
-        )
 
-        return requestBodyUriCustomizer.apply(webclient.post())
+        return requestBodyUriCustomizer
+            .apply(webclient.post())
             .headers { headers -> headers.addAll(GraphQLClients.defaultHeaders) }
             .headers(this.headersConsumer)
             .bodyValue(serializedRequest)
             .retrieve()
             .toEntity<String>()
-            .map { response ->
-                HttpResponse(
-                    statusCode = response.statusCodeValue,
-                    body = response.body,
-                    headers = response.headers
-                )
-            }
             .map { httpResponse -> handleResponse(httpResponse, serializedRequest) }
     }
 
-    private fun handleResponse(response: HttpResponse, requestBody: String): GraphQLResponse {
-        val (statusCode, body) = response
-        val headers = response.headers
-        if (!HttpStatus.valueOf(statusCode).is2xxSuccessful) {
-            throw GraphQLClientException(statusCode, webclient.toString(), body ?: "", requestBody)
+    private fun handleResponse(
+        response: ResponseEntity<String>,
+        requestBody: String,
+    ): GraphQLResponse {
+        if (!response.statusCode.is2xxSuccessful) {
+            throw GraphQLClientException(
+                statusCode = response.statusCode.value(),
+                url = webclient.toString(),
+                response = response.body ?: "",
+                request = requestBody,
+            )
         }
 
-        return GraphQLResponse(body ?: "", headers)
+        return GraphQLResponse(json = response.body ?: "", headers = response.headers)
     }
 
     companion object {

@@ -11,30 +11,34 @@ import graphql.ExecutionInput
 import graphql.ExecutionResult
 import graphql.GraphQLError
 import graphql.InvalidSyntaxError
-import graphql.analysis.QueryTraverser
-import graphql.analysis.QueryVisitorFieldEnvironment
-import graphql.analysis.QueryVisitorStub
-import graphql.execution.instrumentation.*
-import graphql.execution.instrumentation.SimpleInstrumentationContext.whenCompleted
+import graphql.analysis.FieldComplexityCalculator
+import graphql.analysis.QueryComplexityCalculator
+import graphql.execution.ExecutionContext
+import graphql.execution.instrumentation.InstrumentationContext
+import graphql.execution.instrumentation.InstrumentationState
+import graphql.execution.instrumentation.SimpleInstrumentationContext
+import graphql.execution.instrumentation.SimpleInstrumentationContext.noOp
+import graphql.execution.instrumentation.SimplePerformantInstrumentation
 import graphql.execution.instrumentation.parameters.InstrumentationCreateStateParameters
 import graphql.execution.instrumentation.parameters.InstrumentationExecuteOperationParameters
 import graphql.execution.instrumentation.parameters.InstrumentationExecutionParameters
 import graphql.execution.instrumentation.parameters.InstrumentationFieldFetchParameters
 import graphql.execution.instrumentation.parameters.InstrumentationValidationParameters
+import graphql.language.OperationDefinition.Operation
 import graphql.schema.DataFetcher
-import graphql.schema.GraphQLNonNull
-import graphql.schema.GraphQLObjectType
+import graphql.schema.GraphQLNamedType
+import graphql.schema.GraphQLTypeUtil
 import graphql.validation.ValidationError
 import io.micrometer.core.instrument.MeterRegistry
 import io.micrometer.core.instrument.Tag
-import io.micrometer.core.instrument.Tags
 import io.micrometer.core.instrument.Timer
 import org.slf4j.Logger
 import org.slf4j.LoggerFactory
-import java.util.*
+import org.springframework.boot.actuate.metrics.AutoTimer
 import java.util.Optional
 import java.util.concurrent.CompletableFuture
 import java.util.concurrent.CompletionStage
+import kotlin.jvm.optionals.getOrNull
 
 class DgsGraphQLMetricsInstrumentation(
     private val schemaProvider: DgsSchemaProvider,
@@ -42,72 +46,76 @@ class DgsGraphQLMetricsInstrumentation(
     private val tagsProvider: DgsGraphQLMetricsTagsProvider,
     private val properties: DgsGraphQLMetricsProperties,
     private val limitedTagMetricResolver: LimitedTagMetricResolver,
-    private val optQuerySignatureRepository: Optional<QuerySignatureRepository> = Optional.empty()
-) : SimpleInstrumentation() {
-
+    private val optQuerySignatureRepository: Optional<QuerySignatureRepository> = Optional.empty(),
+    private val autoTimer: AutoTimer,
+) : SimplePerformantInstrumentation() {
     companion object {
         private val log: Logger = LoggerFactory.getLogger(DgsGraphQLMetricsInstrumentation::class.java)
     }
 
-    override fun createState(parameters: InstrumentationCreateStateParameters): InstrumentationState {
-        return MetricsInstrumentationState(
+    @Deprecated("Deprecated in Java")
+    override fun createState(parameters: InstrumentationCreateStateParameters): InstrumentationState =
+        MetricsInstrumentationState(
             registrySupplier.get(),
-            limitedTagMetricResolver
+            limitedTagMetricResolver,
         )
-    }
 
     override fun beginExecution(
         parameters: InstrumentationExecutionParameters,
-        state: InstrumentationState
+        state: InstrumentationState,
     ): InstrumentationContext<ExecutionResult> {
-        val miState: MetricsInstrumentationState = state as MetricsInstrumentationState
-        miState.startTimer()
+        if (!properties.query.enabled) {
+            return noOp()
+        }
+        require(state is MetricsInstrumentationState)
+        state.startTimer()
 
-        miState.operationName = Optional.ofNullable(parameters.operation)
-        miState.isIntrospectionQuery = QueryUtils.isIntrospectionQuery(parameters.executionInput)
+        state.operationNameValue = parameters.operation
+        state.isIntrospectionQuery = QueryUtils.isIntrospectionQuery(parameters.executionInput)
 
-        return object : SimpleInstrumentationContext<ExecutionResult>() {
+        return SimpleInstrumentationContext.whenCompleted { result, exc ->
+            val tags =
+                buildList {
+                    addAll(tagsProvider.getContextualTags())
+                    addAll(tagsProvider.getExecutionTags(state, parameters, result, exc))
+                    addAll(state.tags())
+                }
 
-            override fun onDispatched(result: CompletableFuture<ExecutionResult>?) {
-                super.onDispatched(result)
-            }
-
-            override fun onCompleted(result: ExecutionResult, exc: Throwable?) {
-                miState.stopTimer(
-                    properties.autotime
-                        .builder(GqlMetric.QUERY.key)
-                        .tags(tagsProvider.getContextualTags())
-                        .tags(tagsProvider.getExecutionTags(miState, parameters, result, exc))
-                        .tags(miState.tags())
-                )
-            }
+            state.stopTimer(autoTimer.builder(GqlMetric.QUERY.key).tags(tags))
         }
     }
 
     override fun instrumentExecutionResult(
         executionResult: ExecutionResult,
         parameters: InstrumentationExecutionParameters,
-        state: InstrumentationState
+        state: InstrumentationState,
     ): CompletableFuture<ExecutionResult> {
-        val miState: MetricsInstrumentationState = state as MetricsInstrumentationState
-        val tags =
-            Tags.empty()
-                .and(tagsProvider.getContextualTags())
-                .and(tagsProvider.getExecutionTags(miState, parameters, executionResult, null))
-                .and(miState.tags())
+        require(state is MetricsInstrumentationState)
 
-        ErrorUtils
-            .sanitizeErrorPaths(executionResult)
-            .forEach {
-                registrySupplier
-                    .get()
-                    .counter(
-                        GqlMetric.ERROR.key,
-                        tags.and(GqlTag.PATH.key, it.path)
-                            .and(GqlTag.ERROR_CODE.key, it.type)
-                            .and(GqlTag.ERROR_DETAIL.key, it.detail)
-                    ).increment()
+        val errorTagValues = ErrorUtils.sanitizeErrorPaths(executionResult)
+        if (errorTagValues.isNotEmpty()) {
+            val baseTags =
+                buildList {
+                    addAll(tagsProvider.getContextualTags())
+                    addAll(tagsProvider.getExecutionTags(state, parameters, executionResult, null))
+                    addAll(state.tags())
+                }
+
+            val registry = registrySupplier.get()
+            for (errorTagValue in errorTagValues) {
+                val errorTags =
+                    buildList(baseTags.size + 3) {
+                        addAll(baseTags)
+                        add(Tag.of(GqlTag.PATH.key, errorTagValue.path))
+                        add(Tag.of(GqlTag.ERROR_CODE.key, errorTagValue.type))
+                        add(Tag.of(GqlTag.ERROR_DETAIL.key, errorTagValue.detail))
+                    }
+
+                registry
+                    .counter(GqlMetric.ERROR.key, errorTags)
+                    .increment()
             }
+        }
 
         return CompletableFuture.completedFuture(executionResult)
     }
@@ -115,15 +123,16 @@ class DgsGraphQLMetricsInstrumentation(
     override fun instrumentDataFetcher(
         dataFetcher: DataFetcher<*>,
         parameters: InstrumentationFieldFetchParameters,
-        state: InstrumentationState
+        state: InstrumentationState,
     ): DataFetcher<*> {
-        val miState: MetricsInstrumentationState = state as MetricsInstrumentationState
+        require(state is MetricsInstrumentationState)
         val gqlField = TagUtils.resolveDataFetcherTagValue(parameters)
 
         if (parameters.isTrivialDataFetcher ||
-            miState.isIntrospectionQuery ||
+            state.isIntrospectionQuery ||
             TagUtils.shouldIgnoreTag(gqlField) ||
-            !schemaProvider.isFieldInstrumentationEnabled(gqlField)
+            !schemaProvider.isFieldMetricsInstrumentationEnabled(gqlField) ||
+            !properties.resolver.enabled
         ) {
             return dataFetcher
         }
@@ -131,9 +140,11 @@ class DgsGraphQLMetricsInstrumentation(
         return DataFetcher { environment ->
             val registry = registrySupplier.get()
             val baseTags =
-                Tags.of(GqlTag.FIELD.key, gqlField)
-                    .and(tagsProvider.getContextualTags())
-                    .and(miState.tags())
+                buildList {
+                    add(Tag.of(GqlTag.FIELD.key, gqlField))
+                    addAll(tagsProvider.getContextualTags())
+                    addAll(state.tags())
+                }
 
             val sampler = Timer.start(registry)
             try {
@@ -143,19 +154,19 @@ class DgsGraphQLMetricsInstrumentation(
                         recordDataFetcherMetrics(
                             registry,
                             sampler,
-                            miState,
+                            state,
                             parameters,
                             error,
-                            baseTags
+                            baseTags,
                         )
                     }
                 } else {
-                    recordDataFetcherMetrics(registry, sampler, miState, parameters, null, baseTags)
+                    recordDataFetcherMetrics(registry, sampler, state, parameters, null, baseTags)
                 }
                 result
-            } catch (throwable: Throwable) {
-                recordDataFetcherMetrics(registry, sampler, miState, parameters, throwable, baseTags)
-                throw throwable
+            } catch (exc: Exception) {
+                recordDataFetcherMetrics(registry, sampler, state, parameters, exc, baseTags)
+                throw exc
             }
         }
     }
@@ -166,33 +177,38 @@ class DgsGraphQLMetricsInstrumentation(
      */
     override fun beginValidation(
         parameters: InstrumentationValidationParameters,
-        state: InstrumentationState
+        state: InstrumentationState,
     ): InstrumentationContext<List<ValidationError>> {
-        return whenCompleted { errors, throwable ->
-            if (errors != null && errors.isNotEmpty() || throwable != null) {
-                return@whenCompleted
-            }
-            val miState: MetricsInstrumentationState = state as MetricsInstrumentationState
-            if (parameters.document != null) {
-                miState.querySignature = optQuerySignatureRepository.flatMap { it.get(parameters.document, parameters) }
+        require(state is MetricsInstrumentationState)
+        val document =
+            parameters.document
+                ?: return noOp()
+        val querySignatureRepository =
+            optQuerySignatureRepository.getOrNull()
+                ?: return noOp()
+
+        return SimpleInstrumentationContext.whenCompleted { errors, throwable ->
+            if (errors.isNullOrEmpty() && throwable == null) {
+                state.querySignatureValue = querySignatureRepository.get(document, parameters).getOrNull()
             }
         }
     }
 
     override fun beginExecuteOperation(
         parameters: InstrumentationExecuteOperationParameters,
-        state: InstrumentationState
-    ): InstrumentationContext<ExecutionResult> {
-        val miState: MetricsInstrumentationState = state as MetricsInstrumentationState
+        state: InstrumentationState,
+    ): InstrumentationContext<ExecutionResult>? {
+        require(state is MetricsInstrumentationState)
         if (parameters.executionContext.getRoot<Any>() == null) {
-            miState.operation = Optional.of(parameters.executionContext.operationDefinition.operation.name.uppercase())
-            if (!miState.operationName.isPresent) {
-                miState.operationName = Optional.ofNullable(parameters.executionContext.operationDefinition?.name)
+            state.operationValue = parameters.executionContext.operationDefinition.operation
+            if (state.operationNameValue == null) {
+                state.operationNameValue = parameters.executionContext.operationDefinition.name
             }
         }
-
-        miState.queryComplexity = ComplexityUtils.resolveComplexity(parameters)
-        return super.beginExecuteOperation(parameters)
+        if (properties.tags.complexity.enabled) {
+            state.queryComplexityValue = ComplexityUtils.resolveComplexity(parameters)
+        }
+        return super.beginExecuteOperation(parameters, state)
     }
 
     private fun recordDataFetcherMetrics(
@@ -201,119 +217,113 @@ class DgsGraphQLMetricsInstrumentation(
         state: MetricsInstrumentationState,
         parameters: InstrumentationFieldFetchParameters,
         error: Throwable?,
-        baseTags: Iterable<Tag>
+        baseTags: Iterable<Tag>,
     ) {
-        val recordedTags = Tags
-            .of(baseTags)
-            .and(tagsProvider.getFieldFetchTags(state, parameters, error))
+        val recordedTags = baseTags + tagsProvider.getFieldFetchTags(state, parameters, error)
 
         timerSampler.stop(
-            properties
-                .autotime
+            autoTimer
                 .builder(GqlMetric.RESOLVER.key)
                 .tags(recordedTags)
-                .register(registry)
+                .register(registry),
         )
     }
 
     class MetricsInstrumentationState(
         private val registry: MeterRegistry,
-        private val limitedTagMetricResolver: LimitedTagMetricResolver
+        private val limitedTagMetricResolver: LimitedTagMetricResolver,
     ) : InstrumentationState {
-        private var timerSample: Optional<Timer.Sample> = Optional.empty()
+        private var timerSample: Timer.Sample? = null
 
         var isIntrospectionQuery = false
-        var queryComplexity: Optional<Int> = Optional.empty()
-        var operation: Optional<String> = Optional.empty()
-        var operationName: Optional<String> = Optional.empty()
-        var querySignature: Optional<QuerySignatureRepository.QuerySignature> = Optional.empty()
+        internal var queryComplexityValue: Int? = null
+        internal var operationValue: Operation? = null
+        internal var operationNameValue: String? = null
+        internal var querySignatureValue: QuerySignatureRepository.QuerySignature? = null
+
+        val queryComplexity: Optional<Int> get() = Optional.ofNullable(queryComplexityValue)
+        val operation: Optional<String> get() = Optional.ofNullable(operationValue?.name)
+        val operationName: Optional<String> get() = Optional.ofNullable(operationNameValue)
+        val querySignature: Optional<QuerySignatureRepository.QuerySignature> get() = Optional.ofNullable(querySignatureValue)
 
         fun startTimer() {
-            this.timerSample = Optional.of(Timer.start(this.registry))
+            this.timerSample = Timer.start(this.registry)
         }
 
         fun stopTimer(timer: Timer.Builder) {
-            this.timerSample.ifPresent { it.stop(timer.register(this.registry)) }
+            this.timerSample?.stop(timer.register(this.registry))
         }
 
         @Internal
-        fun tags(): Tags {
-            return Tags
-                .of(
+        fun tags(): Iterable<Tag> {
+            val tags = mutableListOf<Tag>()
+            tags +=
+                Tag.of(
                     GqlTag.QUERY_COMPLEXITY.key,
-                    queryComplexity.map { it.toString() }.orElse(TagUtils.TAG_VALUE_NONE)
+                    queryComplexityValue?.toString() ?: TagUtils.TAG_VALUE_NONE,
                 )
-                .and(
+            tags +=
+                Tag.of(
                     GqlTag.OPERATION.key,
-                    operation.map { it.uppercase() }.orElse(TagUtils.TAG_VALUE_NONE)
+                    operationValue?.name ?: TagUtils.TAG_VALUE_NONE,
                 )
-                .and(
-                    limitedTagMetricResolver.tags(
-                        GqlTag.OPERATION_NAME.key,
-                        operationName.orElse(TagUtils.TAG_VALUE_ANONYMOUS)
-                    )
+
+            tags +=
+                limitedTagMetricResolver.tags(
+                    GqlTag.OPERATION_NAME.key,
+                    operationNameValue ?: TagUtils.TAG_VALUE_ANONYMOUS,
                 )
-                .and(
-                    limitedTagMetricResolver.tags(
-                        GqlTag.QUERY_SIG_HASH.key,
-                        querySignature.map { it.hash }.orElse(TagUtils.TAG_VALUE_NONE)
-                    )
+
+            tags +=
+                limitedTagMetricResolver.tags(
+                    GqlTag.QUERY_SIG_HASH.key,
+                    querySignatureValue?.hash ?: TagUtils.TAG_VALUE_NONE,
                 )
+
+            return tags
         }
     }
 
     internal object QueryUtils {
-        fun isIntrospectionQuery(input: ExecutionInput): Boolean {
-            return input.query.contains("query IntrospectionQuery") || input.operationName == "IntrospectionQuery"
-        }
+        fun isIntrospectionQuery(input: ExecutionInput): Boolean =
+            input.query.contains("query IntrospectionQuery") || input.operationName == "IntrospectionQuery"
     }
 
     internal object ComplexityUtils {
+        private val complexityCalculator: FieldComplexityCalculator =
+            FieldComplexityCalculator {
+                _,
+                childComplexity,
+                ->
+                childComplexity + 1
+            }
 
         private val queryComplexityBuckets = listOf(5, 10, 25, 50, 100, 200, 500, 1000, 2000, 5000, 10000)
 
-        fun resolveComplexity(parameters: InstrumentationExecuteOperationParameters): Optional<Int> {
-            try {
-                val queryTraverser: QueryTraverser = newQueryTraverser(parameters)
-                val valuesByParent: MutableMap<QueryVisitorFieldEnvironment?, Int?> =
-                    LinkedHashMap<QueryVisitorFieldEnvironment?, Int?>()
-                queryTraverser.visitPostOrder(object : QueryVisitorStub() {
-                    override fun visitField(env: QueryVisitorFieldEnvironment?) {
-                        val childComplexity = valuesByParent.getOrDefault(env, 0)
-                        val value = calculateComplexity(env!!, childComplexity!!)
-                        valuesByParent.compute(env.parentEnvironment) { _, oldValue -> Optional.ofNullable(oldValue).orElse(0) + value }
-                    }
-                })
-                val totalComplexity = valuesByParent.getOrDefault(null, 0)
-                return Optional.ofNullable(queryComplexityBuckets.filter { totalComplexity!! < it }.minOrNull())
-            } catch (error: Throwable) {
-                log.error("Unable to compute the query complexity!", error)
-                return Optional.empty()
+        fun resolveComplexity(parameters: InstrumentationExecuteOperationParameters): Int? {
+            val executionContext: ExecutionContext = parameters.executionContext
+            val complexityCalculator: QueryComplexityCalculator =
+                QueryComplexityCalculator
+                    .newCalculator()
+                    .fieldComplexityCalculator(complexityCalculator)
+                    .schema(executionContext.graphQLSchema)
+                    .document(executionContext.document)
+                    .operationName(executionContext.executionInput.operationName)
+                    .variables(executionContext.coercedVariables)
+                    .build()
+            val complexity: Int =
+                try {
+                    complexityCalculator.calculate()
+                } catch (exc: Exception) {
+                    log.error("Unable to compute the query complexity!", exc)
+                    return null
+                }
+            for (bucket in queryComplexityBuckets) {
+                if (complexity < bucket) {
+                    return bucket
+                }
             }
-        }
-
-        /**
-         * Port from MaxQueryComplexityInstrumentation in graphql-java
-         */
-        fun calculateComplexity(
-            queryVisitorFieldEnvironment: QueryVisitorFieldEnvironment,
-            childComplexity: Int,
-            fieldComplexityCalculator: (Int) -> Int = { cx -> 1 + cx }
-        ): Int {
-            if (queryVisitorFieldEnvironment.isTypeNameIntrospectionField) {
-                return 0
-            }
-            return fieldComplexityCalculator(childComplexity)
-        }
-
-        private fun newQueryTraverser(parameters: InstrumentationExecuteOperationParameters): QueryTraverser {
-            return QueryTraverser
-                .newQueryTraverser()
-                .schema(parameters.executionContext.graphQLSchema)
-                .document(parameters.executionContext.document)
-                .operationName(parameters.executionContext.operationDefinition.name)
-                .variables(parameters.executionContext.variables)
-                .build()
+            return Int.MAX_VALUE
         }
     }
 
@@ -322,35 +332,27 @@ class DgsGraphQLMetricsInstrumentation(
 
         const val TAG_VALUE_ANONYMOUS = "anonymous"
         const val TAG_VALUE_NONE = "none"
-        const val TAG_VALUE_UNKNOWN = "unknown"
+        val TAG_VALUE_UNKNOWN = ErrorType.UNKNOWN.name
 
         fun resolveDataFetcherTagValue(parameters: InstrumentationFieldFetchParameters): String {
             val type = parameters.executionStepInfo.parent.type
-            val parentType = if (type is GraphQLNonNull) {
-                type.wrappedType as GraphQLObjectType
-            } else {
-                type as GraphQLObjectType
-            }
-
+            val parentType = GraphQLTypeUtil.unwrapNonNullAs<GraphQLNamedType>(type)
             return "${parentType.name}.${parameters.executionStepInfo.field.singleField.name}"
         }
 
-        fun shouldIgnoreTag(tag: String): Boolean {
-            return instrumentationIgnores.find { tag.contains(it) } != null
-        }
+        fun shouldIgnoreTag(tag: String): Boolean = instrumentationIgnores.any { tag.contains(it) }
     }
 
     internal object ErrorUtils {
-
         fun sanitizeErrorPaths(executionResult: ExecutionResult): Collection<ErrorTagValues> {
-            var dedupeErrorPaths: Map<String, ErrorTagValues> = emptyMap()
+            val dedupeErrorPaths = mutableMapOf<String, ErrorTagValues>()
             executionResult.errors.forEach { error ->
                 val errorPath: List<Any>
                 val errorType: String
                 val errorDetail = errorDetailExtension(error)
                 when (error) {
                     is ValidationError -> {
-                        errorPath = error.queryPath ?: emptyList()
+                        errorPath = error.queryPath.orEmpty()
                         errorType = ErrorType.BAD_REQUEST.name
                     }
                     is InvalidSyntaxError -> {
@@ -358,35 +360,41 @@ class DgsGraphQLMetricsInstrumentation(
                         errorType = ErrorType.BAD_REQUEST.name
                     }
                     else -> {
-                        errorPath = error.path ?: emptyList()
+                        errorPath = error.path.orEmpty()
                         errorType = errorTypeExtension(error)
                     }
                 }
-                val sanitizedPath = errorPath.map { iter ->
-                    if (iter.toString().toIntOrNull() != null) "number"
-                    else iter.toString()
-                }.toString()
-                // in case of batch loaders, eliminate duplicate instances of the same error at different indices
-                if (!dedupeErrorPaths.contains(sanitizedPath)) {
-                    dedupeErrorPaths = dedupeErrorPaths
-                        .plus(Pair(sanitizedPath, ErrorTagValues(sanitizedPath, errorType, errorDetail)))
+
+                val path =
+                    errorPath.joinToString(prefix = "[", postfix = "]") { segment ->
+                        when (segment) {
+                            is Number -> "number"
+                            is String -> segment
+                            else -> segment.toString()
+                        }
+                    }
+
+                dedupeErrorPaths.computeIfAbsent(path) {
+                    ErrorTagValues(path, errorType, errorDetail)
                 }
             }
             return dedupeErrorPaths.values
         }
 
-        private fun <T : GraphQLError> errorTypeExtension(error: T): String {
-            return extension(error, "errorType", TagUtils.TAG_VALUE_UNKNOWN)
-        }
+        private fun <T : GraphQLError> errorTypeExtension(error: T): String = extension(error, "errorType", TagUtils.TAG_VALUE_UNKNOWN)
 
-        private fun <T : GraphQLError> errorDetailExtension(error: T): String {
-            return extension(error, "errorDetail", TagUtils.TAG_VALUE_NONE)
-        }
+        private fun <T : GraphQLError> errorDetailExtension(error: T): String = extension(error, "errorDetail", TagUtils.TAG_VALUE_NONE)
 
-        private fun <T : GraphQLError> extension(error: T, key: String, default: String): String {
-            return error.extensions?.get(key)?.toString() ?: default
-        }
+        private fun <T : GraphQLError> extension(
+            error: T,
+            key: String,
+            default: String,
+        ): String = error.extensions?.get(key)?.toString() ?: default
 
-        internal data class ErrorTagValues(val path: String, val type: String, val detail: String)
+        internal data class ErrorTagValues(
+            val path: String,
+            val type: String,
+            val detail: String,
+        )
     }
 }

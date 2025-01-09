@@ -25,8 +25,6 @@ import graphql.relay.Connection;
 import graphql.relay.SimpleListConnection;
 import graphql.schema.DataFetchingEnvironment;
 import org.dataloader.DataLoader;
-import org.springframework.http.HttpHeaders;
-import org.springframework.web.bind.annotation.RequestHeader;
 
 import java.util.ArrayList;
 import java.util.Collections;
@@ -50,14 +48,25 @@ public class HelloDataFetcher {
     @DgsData(parentType = "Query", field = "messageFromBatchLoader")
     public CompletableFuture<String> getMessage(DataFetchingEnvironment env) {
         DataLoader<String, String> dataLoader = env.getDataLoader("messages");
+        DataLoader<String, String> dataLoaderB = env.getDataLoader("greetings");
         return dataLoader.load("a");
+    }
+
+    @DgsData(parentType = "Query", field = "messageFromBatchLoaderWithGreetings")
+    public CompletableFuture<String> getGreetings(DataFetchingEnvironment env) {
+        DataLoader<String, String> dataLoaderA = env.getDataLoader("messages");
+        DataLoader<String, String> dataLoaderB = env.getDataLoader("greetings");
+        return dataLoaderB.load("a").thenCompose(key -> {
+            CompletableFuture<String> loadA = dataLoaderA.load(key);
+            dataLoaderA.dispatch();
+            return loadA;
+        });
     }
 
     @DgsData(parentType = "Query", field = "messageFromBatchLoaderWithScheduledDispatch")
     public CompletableFuture<String> getMessageScheduled(DataFetchingEnvironment env) {
         DataLoader<String, String> dataLoader = env.getDataLoader("messagesWithScheduledDispatch");
-        CompletableFuture res =  dataLoader.load("a");
-
+        CompletableFuture<String> res = dataLoader.load("a");
         return res;
     }
 
@@ -72,7 +81,7 @@ public class HelloDataFetcher {
 
     @DgsData(parentType = "Message", field = "info")
     public CompletableFuture<String> getMessageWithException(DgsDataFetchingEnvironment env) {
-        Message msg = env.getSource();
+        Message msg = env.getSourceOrThrow();
         DataLoader<String, String> dataLoader = env.getDataLoader("messagesDataLoaderWithException");
         return dataLoader.load(msg.getInfo());
     }

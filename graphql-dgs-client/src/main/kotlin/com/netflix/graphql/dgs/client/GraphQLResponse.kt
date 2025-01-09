@@ -21,7 +21,9 @@ import com.fasterxml.jackson.databind.DeserializationFeature
 import com.fasterxml.jackson.databind.ObjectMapper
 import com.fasterxml.jackson.datatype.jdk8.Jdk8Module
 import com.fasterxml.jackson.datatype.jsr310.JavaTimeModule
-import com.fasterxml.jackson.module.kotlin.jacksonObjectMapper
+import com.fasterxml.jackson.module.kotlin.KotlinFeature
+import com.fasterxml.jackson.module.kotlin.jsonMapper
+import com.fasterxml.jackson.module.kotlin.kotlinModule
 import com.fasterxml.jackson.module.paramnames.ParameterNamesModule
 import com.jayway.jsonpath.Configuration
 import com.jayway.jsonpath.DocumentContext
@@ -30,6 +32,7 @@ import com.jayway.jsonpath.Option
 import com.jayway.jsonpath.TypeRef
 import com.jayway.jsonpath.spi.json.JacksonJsonProvider
 import com.jayway.jsonpath.spi.mapper.JacksonMappingProvider
+import org.intellij.lang.annotations.Language
 import org.slf4j.Logger
 import org.slf4j.LoggerFactory
 
@@ -37,12 +40,24 @@ import org.slf4j.LoggerFactory
  * Representation of a GraphQL response, which may contain GraphQL errors.
  * This class gives convenient JSON parsing methods to get data out of the response.
  */
-data class GraphQLResponse(val json: String, val headers: Map<String, List<String>>) {
-
+data class GraphQLResponse(
+    @Language("json") val json: String,
+    val headers: Map<String, List<String>>,
+    private val mapper: ObjectMapper,
+) {
     /**
      * A JsonPath DocumentContext. Typically, only used internally.
      */
-    val parsed: DocumentContext = JsonPath.using(jsonPathConfig).parse(json)
+    val parsed: DocumentContext =
+        JsonPath
+            .using(
+                Configuration
+                    .builder()
+                    .jsonProvider(JacksonJsonProvider(mapper))
+                    .mappingProvider(JacksonMappingProvider(mapper))
+                    .build()
+                    .addOptions(Option.DEFAULT_PATH_LEAF_TO_NULL),
+            ).parse(json)
 
     /**
      * Map representation of data
@@ -51,15 +66,24 @@ data class GraphQLResponse(val json: String, val headers: Map<String, List<Strin
     val data: Map<String, Any> = parsed.read("data") ?: emptyMap()
     val errors: List<GraphQLError> = parsed.read("errors", jsonTypeRef<List<GraphQLError>>()) ?: emptyList()
 
-    constructor(json: String) : this(json, emptyMap())
+    constructor(
+        @Language("json") json: String,
+    ) : this(json, emptyMap())
+    constructor(
+        @Language("json") json: String,
+        headers: Map<String, List<String>>,
+    ) : this(
+        json,
+        headers,
+        // default object mapper instead no instance is passed in the constructor
+        DEFAULT_MAPPER,
+    )
 
     /**
      * Deserialize data into the given class.
      * The class may need Jackson annotations for correct mapping.
      */
-    fun <T> dataAsObject(clazz: Class<T>): T {
-        return mapper.convertValue(data, clazz)
-    }
+    fun <T> dataAsObject(clazz: Class<T>): T = mapper.convertValue(data, clazz)
 
     /**
      * Extract values given a JsonPath. The return type will be whatever type you expect.
@@ -80,7 +104,10 @@ data class GraphQLResponse(val json: String, val headers: Map<String, List<Strin
     /**
      * Extract values given a JsonPath and deserialize into the given class.
      */
-    fun <T> extractValueAsObject(path: String, clazz: Class<T>): T {
+    fun <T> extractValueAsObject(
+        path: String,
+        clazz: Class<T>,
+    ): T {
         val dataPath = getDataPath(path)
 
         try {
@@ -95,7 +122,10 @@ data class GraphQLResponse(val json: String, val headers: Map<String, List<Strin
      * Extract values given a JsonPath and deserialize into the given TypeRef.
      * Use this for Lists of a specific type.
      */
-    fun <T> extractValueAsObject(path: String, typeRef: TypeRef<T>): T {
+    fun <T> extractValueAsObject(
+        path: String,
+        typeRef: TypeRef<T>,
+    ): T {
         val dataPath = getDataPath(path)
 
         try {
@@ -110,31 +140,35 @@ data class GraphQLResponse(val json: String, val headers: Map<String, List<Strin
      * Extracts RequestDetails from the response if available.
      * Returns null otherwise.
      */
-    fun getRequestDetails(): RequestDetails {
-        return extractValueAsObject("gatewayRequestDetails", RequestDetails::class.java)
-    }
-
-    private fun getDataPath(path: String) = if (!path.startsWith("data")) "data.$path" else path
+    fun getRequestDetails(): RequestDetails? = extractValueAsObject("gatewayRequestDetails", RequestDetails::class.java)
 
     fun hasErrors(): Boolean = errors.isNotEmpty()
 
     companion object {
         private val logger: Logger = LoggerFactory.getLogger(GraphQLResponse::class.java)
 
-        private val mapper: ObjectMapper = jacksonObjectMapper()
-            .registerModule(JavaTimeModule())
-            .registerModule(ParameterNamesModule())
-            .registerModule(Jdk8Module())
-            .enable(DeserializationFeature.READ_UNKNOWN_ENUM_VALUES_USING_DEFAULT_VALUE)
+        internal val DEFAULT_MAPPER: ObjectMapper =
+            jsonMapper {
+                addModule(kotlinModule { enable(KotlinFeature.NullIsSameAsDefault) })
+                addModule(JavaTimeModule())
+                addModule(ParameterNamesModule())
+                addModule(Jdk8Module())
+                enable(DeserializationFeature.READ_UNKNOWN_ENUM_VALUES_USING_DEFAULT_VALUE)
+            }
 
-        private val jsonPathConfig: Configuration = Configuration.builder()
-            .jsonProvider(JacksonJsonProvider(mapper))
-            .mappingProvider(JacksonMappingProvider(mapper)).build()
-            .addOptions(Option.DEFAULT_PATH_LEAF_TO_NULL)
+        fun getDataPath(path: String): String =
+            if (path == "data" || path.startsWith("data.")) {
+                path
+            } else {
+                "data.$path"
+            }
     }
 }
 
 @JsonIgnoreProperties(ignoreUnknown = true)
-data class RequestDetails(val requestId: String?, val edgarLink: String?)
+data class RequestDetails(
+    val requestId: String?,
+    val edgarLink: String?,
+)
 
 inline fun <reified T> jsonTypeRef(): TypeRef<T> = object : TypeRef<T>() {}

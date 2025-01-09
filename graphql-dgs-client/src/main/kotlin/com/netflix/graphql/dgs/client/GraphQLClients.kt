@@ -17,33 +17,54 @@
 package com.netflix.graphql.dgs.client
 
 import com.fasterxml.jackson.databind.ObjectMapper
+import com.fasterxml.jackson.module.kotlin.KotlinFeature
 import com.fasterxml.jackson.module.kotlin.KotlinModule
-import com.fasterxml.jackson.module.kotlin.registerKotlinModule
 import org.springframework.http.HttpHeaders
+import org.springframework.http.HttpStatusCode
 import org.springframework.http.MediaType
-import org.springframework.util.ClassUtils
+import org.springframework.http.converter.json.Jackson2ObjectMapperBuilder
 
 internal object GraphQLClients {
-
     internal val objectMapper: ObjectMapper =
-        if (ClassUtils.isPresent("com.fasterxml.jackson.module.kotlin.KotlinModule\$Builder", this::class.java.classLoader)) {
-            ObjectMapper().registerModule(KotlinModule.Builder().nullIsSameAsDefault(true).build())
-        } else ObjectMapper().registerKotlinModule()
+        Jackson2ObjectMapperBuilder
+            .json()
+            .modulesToInstall(
+                KotlinModule
+                    .Builder()
+                    .enable(KotlinFeature.NullIsSameAsDefault)
+                    .build(),
+            ).build()
 
-    internal val defaultHeaders: HttpHeaders = HttpHeaders.readOnlyHttpHeaders(
-        HttpHeaders().apply {
-            accept = listOf(MediaType.APPLICATION_JSON)
-            contentType = MediaType.APPLICATION_JSON
-        }
-    )
+    internal val defaultHeaders: HttpHeaders =
+        HttpHeaders.readOnlyHttpHeaders(
+            HttpHeaders().apply {
+                accept = listOf(MediaType.APPLICATION_JSON)
+                contentType = MediaType.APPLICATION_JSON
+            },
+        )
 
-    fun handleResponse(response: HttpResponse, requestBody: String, url: String): GraphQLResponse {
+    fun handleResponse(
+        response: HttpResponse,
+        requestBody: String,
+        url: String,
+    ): GraphQLResponse {
         val (statusCode, body) = response
         val headers = response.headers
-        if (statusCode !in 200..299) {
+        if (HttpStatusCode.valueOf(response.statusCode).isError) {
             throw GraphQLClientException(statusCode, url, body ?: "", requestBody)
         }
 
         return GraphQLResponse(body ?: "", headers)
     }
+
+    internal fun toRequestMap(
+        query: String,
+        operationName: String?,
+        variables: Map<String, Any?>,
+    ): Map<String, Any?> =
+        mapOf(
+            "query" to query,
+            "operationName" to operationName,
+            "variables" to variables,
+        )
 }

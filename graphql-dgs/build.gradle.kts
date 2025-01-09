@@ -13,13 +13,11 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-
 dependencies {
 
     api(project(":graphql-error-types"))
-    api(project(":graphql-dgs-mocking"))
-
     api("com.graphql-java:graphql-java")
+    api("com.graphql-java:java-dataloader")
     api("com.jayway.jsonpath:json-path")
 
     implementation("org.jetbrains.kotlin:kotlin-reflect")
@@ -30,13 +28,14 @@ dependencies {
     compileOnly("org.springframework.security:spring-security-core")
     compileOnly("io.projectreactor:reactor-core")
     compileOnly("jakarta.annotation:jakarta.annotation-api")
+    compileOnly("com.github.ben-manes.caffeine:caffeine")
 
     implementation("com.fasterxml.jackson.module:jackson-module-kotlin")
     implementation("com.fasterxml.jackson.datatype:jackson-datatype-jsr310")
     implementation("com.apollographql.federation:federation-graphql-java-support")
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-core")
-    implementation("org.jetbrains.kotlinx:kotlinx-coroutines-jdk8")
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-reactor")
+    implementation("io.micrometer:context-propagation")
 
     testImplementation("org.springframework.security:spring-security-core")
     testImplementation("io.projectreactor:reactor-core")
@@ -44,3 +43,4 @@ dependencies {
     testImplementation("com.graphql-java:graphql-java-extended-scalars")
     testImplementation("org.jetbrains.kotlinx:kotlinx-coroutines-test")
 }
+

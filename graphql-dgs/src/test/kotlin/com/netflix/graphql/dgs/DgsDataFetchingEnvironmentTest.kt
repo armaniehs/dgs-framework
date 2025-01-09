@@ -23,29 +23,21 @@ import com.netflix.graphql.dgs.internal.method.MethodDataFetcherFactory
 import graphql.ExecutionInput
 import graphql.GraphQL
 import graphql.schema.DataFetchingEnvironment
-import io.mockk.every
-import io.mockk.impl.annotations.MockK
-import io.mockk.impl.annotations.RelaxedMockK
-import io.mockk.junit5.MockKExtension
 import org.dataloader.DataLoader
 import org.junit.jupiter.api.Assertions
-import org.junit.jupiter.api.BeforeEach
 import org.junit.jupiter.api.Test
-import org.junit.jupiter.api.extension.ExtendWith
-import org.springframework.beans.factory.support.StaticListableBeanFactory
+import org.springframework.boot.autoconfigure.AutoConfigurations
+import org.springframework.boot.test.context.runner.ApplicationContextRunner
 import org.springframework.context.ApplicationContext
-import java.util.*
+import java.util.Optional
 import java.util.concurrent.CompletableFuture
+import kotlin.reflect.KClass
 
-@ExtendWith(MockKExtension::class)
 internal class DgsDataFetchingEnvironmentTest {
-    @MockK
-    lateinit var applicationContextMock: ApplicationContext
+    private val contextRunner = ApplicationContextRunner()
 
-    @RelaxedMockK
-    lateinit var dfeMock: DataFetchingEnvironment
-
-    val helloFetcher = object : Any() {
+    @DgsComponent
+    class HelloFetcher {
         @DgsData(parentType = "Query", field = "hello")
         fun someFetcher(dfe: DgsDataFetchingEnvironment): CompletableFuture<String> {
             val loader: DataLoader<String, String> = dfe.getDataLoader(ExampleBatchLoader::class.java)
@@ -55,7 +47,8 @@ internal class DgsDataFetchingEnvironmentTest {
         }
     }
 
-    val helloFetcherWithField = object : Any() {
+    @DgsComponent
+    class HelloFetcherWithField {
         @DgsData(parentType = "Query", field = "hello")
         fun someFetcher(dfe: DgsDataFetchingEnvironment): CompletableFuture<String> {
             val loader: DataLoader<String, String> = dfe.getDataLoader(ExampleBatchLoaderFromField::class.java)
@@ -65,7 +58,8 @@ internal class DgsDataFetchingEnvironmentTest {
         }
     }
 
-    val helloFetcherWithMultipleField = object : Any() {
+    @DgsComponent
+    class HelloFetcherWithMultipleField {
         @DgsData(parentType = "Query", field = "hello")
         fun someFetcher(dfe: DgsDataFetchingEnvironment): CompletableFuture<String> {
             val loader: DataLoader<String, String> = dfe.getDataLoader(ExampleMultipleBatchLoadersAsField::class.java)
@@ -75,17 +69,21 @@ internal class DgsDataFetchingEnvironmentTest {
         }
     }
 
-    val helloFetcherMapped = object : Any() {
+    @DgsComponent
+    class HelloFetcherMapped {
         @DgsData(parentType = "Query", field = "hello")
         fun someFetcher(dfe: DgsDataFetchingEnvironment): CompletableFuture<String> {
-            val loader = dfe.getDataLoader<String, String>("exampleMappedLoader")
+            val loader =
+                dfe.getDataLoader<String, String>("exampleMappedLoader")
+                    ?: throw AssertionError("exampleMappedLoader not found")
             loader.load("a")
             loader.load("b")
             return loader.load("c")
         }
     }
 
-    val helloFetcherWithFieldMapped = object : Any() {
+    @DgsComponent
+    class HelloFetcherWithFieldMapped {
         @DgsData(parentType = "Query", field = "hello")
         fun someFetcher(dfe: DgsDataFetchingEnvironment): CompletableFuture<String> {
             val loader: DataLoader<String, String> = dfe.getDataLoader(ExampleMappedBatchLoaderFromField::class.java)
@@ -95,48 +93,54 @@ internal class DgsDataFetchingEnvironmentTest {
         }
     }
 
-    val helloFetcherWithBasicDFE = object : Any() {
+    @DgsComponent
+    class HelloFetcherWithBasicDfe {
         @DgsData(parentType = "Query", field = "hello")
         fun someFetcher(dfe: DataFetchingEnvironment): CompletableFuture<String> {
-            // val loader: DataLoader<String, String> = dfe.getDataLoader<String, String>(ExampleBatchLoader::class.java)
-            val loader = dfe.getDataLoader<String, String>("exampleLoader")
+            val loader =
+                dfe.getDataLoader<String, String>("exampleLoader")
+                    ?: throw AssertionError("exampleLoader not found")
             loader.load("a")
             loader.load("b")
             return loader.load("c")
         }
     }
 
-    @BeforeEach
-    fun setDataLoaderInstrumentationExtensionProvider() {
-        val listableBeanFactory = StaticListableBeanFactory()
-        every { applicationContextMock.getBeanProvider(DataLoaderInstrumentationExtensionProvider::class.java) } returns
-            listableBeanFactory.getBeanProvider(DataLoaderInstrumentationExtensionProvider::class.java)
-
-        every { applicationContextMock.getBeansWithAnnotation(DgsScalar::class.java) } returns emptyMap()
-    }
-
     @Test
     fun getDataLoader() {
-        every { applicationContextMock.getBeansWithAnnotation(DgsComponent::class.java) } returns mapOf(Pair("helloFetcher", helloFetcher))
-        every { applicationContextMock.getBeansWithAnnotation(DgsDataLoader::class.java) } returns mapOf(Pair("helloLoader", ExampleBatchLoader()))
-        every { applicationContextMock.getBeansWithAnnotation(DgsDirective::class.java) } returns emptyMap()
-        val provider = DgsDataLoaderProvider(applicationContextMock)
+        contextRunner.withBeans(ExampleBatchLoader::class, HelloFetcher::class).run { context ->
+            validateDataLoader(context)
+        }
+    }
+
+    @Test
+    fun getDataLoaderWithBasicDfe() {
+        contextRunner.withBeans(HelloFetcherWithBasicDfe::class, ExampleBatchLoader::class).run { context ->
+            validateDataLoader(context)
+        }
+    }
+
+    private fun validateDataLoader(context: ApplicationContext) {
+        val provider = DgsDataLoaderProvider(context)
         provider.findDataLoaders()
         val dataLoaderRegistry = provider.buildRegistry()
 
-        val schemaProvider = DgsSchemaProvider(
-            applicationContext = applicationContextMock,
-            federationResolver = Optional.empty(),
-            existingTypeDefinitionRegistry = Optional.empty(),
-            methodDataFetcherFactory = MethodDataFetcherFactory(listOf(DataFetchingEnvironmentArgumentResolver()))
-        )
-        val schema = schemaProvider.schema()
+        val schemaProvider =
+            DgsSchemaProvider(
+                applicationContext = context,
+                federationResolver = Optional.empty(),
+                existingTypeDefinitionRegistry = Optional.empty(),
+                methodDataFetcherFactory = MethodDataFetcherFactory(listOf(DataFetchingEnvironmentArgumentResolver(context))),
+            )
+        val schema = schemaProvider.schema().graphQLSchema
         val build = GraphQL.newGraphQL(schema).build()
 
-        val executionInput: ExecutionInput = ExecutionInput.newExecutionInput()
-            .query("{hello}")
-            .dataLoaderRegistry(dataLoaderRegistry)
-            .build()
+        val executionInput: ExecutionInput =
+            ExecutionInput
+                .newExecutionInput()
+                .query("{hello}")
+                .dataLoaderRegistry(dataLoaderRegistry)
+                .build()
         val executionResult = build.execute(executionInput)
         Assertions.assertTrue(executionResult.isDataPresent)
         val result = executionResult.getData() as Map<String, String>
@@ -144,146 +148,124 @@ internal class DgsDataFetchingEnvironmentTest {
     }
 
     @Test
-    fun getDataLoaderWithBasicDFE() {
-        every { applicationContextMock.getBeansWithAnnotation(DgsComponent::class.java) } returns mapOf(Pair("helloFetcher", helloFetcherWithBasicDFE))
-        every { applicationContextMock.getBeansWithAnnotation(DgsDataLoader::class.java) } returns mapOf(Pair("helloLoader", ExampleBatchLoader()))
-        every { applicationContextMock.getBeansWithAnnotation(DgsDirective::class.java) } returns emptyMap()
-        val provider = DgsDataLoaderProvider(applicationContextMock)
-        provider.findDataLoaders()
-        val dataLoaderRegistry = provider.buildRegistry()
+    fun getDataLoaderFromBean() {
+        contextRunner
+            .withConfiguration(AutoConfigurations.of(ExampleBatchLoaderFromBean::class.java))
+            .run { context ->
+                validateDataLoader(context)
+            }
 
-        val schemaProvider = DgsSchemaProvider(
-            applicationContext = applicationContextMock,
-            federationResolver = Optional.empty(),
-            existingTypeDefinitionRegistry = Optional.empty(),
-            methodDataFetcherFactory = MethodDataFetcherFactory(listOf(DataFetchingEnvironmentArgumentResolver()))
-        )
-        val schema = schemaProvider.schema()
-        val build = GraphQL.newGraphQL(schema).build()
-
-        val executionInput: ExecutionInput = ExecutionInput.newExecutionInput()
-            .query("{hello}")
-            .dataLoaderRegistry(dataLoaderRegistry)
-            .build()
-        val executionResult = build.execute(executionInput)
-        Assertions.assertTrue(executionResult.isDataPresent)
-        val result = executionResult.getData() as Map<String, String>
-        Assertions.assertEquals("c", result["hello"])
+        contextRunner
+            .withConfiguration(AutoConfigurations.of(ExampleBatchLoaderFromBeanName::class.java))
+            .run { context ->
+                validateDataLoader(context)
+            }
     }
 
     @Test
     fun getDataLoaderFromField() {
-        every { applicationContextMock.getBeansWithAnnotation(DgsDataLoader::class.java) } returns emptyMap()
-        every { applicationContextMock.getBeansWithAnnotation(DgsDirective::class.java) } returns emptyMap()
-        every { applicationContextMock.getBeansWithAnnotation(DgsComponent::class.java) } returns mapOf(Pair("helloFetcher", helloFetcherWithField), Pair("helloLoader", ExampleBatchLoaderFromField()))
-
-        val provider = DgsDataLoaderProvider(applicationContextMock)
-        provider.findDataLoaders()
-        val dataLoaderRegistry = provider.buildRegistry()
-
-        val schemaProvider = DgsSchemaProvider(
-            applicationContext = applicationContextMock,
-            federationResolver = Optional.empty(),
-            existingTypeDefinitionRegistry = Optional.empty(),
-            methodDataFetcherFactory = MethodDataFetcherFactory(listOf(DataFetchingEnvironmentArgumentResolver()))
-        )
-        val schema = schemaProvider.schema()
-        val build = GraphQL.newGraphQL(schema).build()
-
-        val executionInput: ExecutionInput = ExecutionInput.newExecutionInput()
-            .query("{hello}")
-            .dataLoaderRegistry(dataLoaderRegistry)
-            .build()
-        val executionResult = build.execute(executionInput)
-        Assertions.assertTrue(executionResult.isDataPresent)
-        val result = executionResult.getData() as Map<String, String>
-        Assertions.assertEquals("c", result["hello"])
+        contextRunner.withBeans(HelloFetcherWithField::class, ExampleBatchLoaderFromField::class).run { context ->
+            validateDataLoader(context)
+        }
     }
 
     @Test
     fun getMultipleDataLoadersFromField() {
-        every { applicationContextMock.getBeansWithAnnotation(DgsDataLoader::class.java) } returns emptyMap()
-        every { applicationContextMock.getBeansWithAnnotation(DgsDirective::class.java) } returns emptyMap()
-        every { applicationContextMock.getBeansWithAnnotation(DgsComponent::class.java) } returns mapOf(Pair("helloFetcher", helloFetcherWithMultipleField), Pair("helloLoader", ExampleMultipleBatchLoadersAsField()))
+        contextRunner.withBeans(HelloFetcherWithMultipleField::class, ExampleMultipleBatchLoadersAsField::class).run { context ->
+            val provider = DgsDataLoaderProvider(context)
+            provider.findDataLoaders()
+            val dataLoaderRegistry = provider.buildRegistry()
 
-        val provider = DgsDataLoaderProvider(applicationContextMock)
-        provider.findDataLoaders()
-        val dataLoaderRegistry = provider.buildRegistry()
+            val schemaProvider =
+                DgsSchemaProvider(
+                    applicationContext = context,
+                    federationResolver = Optional.empty(),
+                    existingTypeDefinitionRegistry = Optional.empty(),
+                    methodDataFetcherFactory = MethodDataFetcherFactory(listOf()),
+                )
 
-        val schemaProvider = DgsSchemaProvider(
-            applicationContext = applicationContextMock,
-            federationResolver = Optional.empty(),
-            existingTypeDefinitionRegistry = Optional.empty(),
-            methodDataFetcherFactory = MethodDataFetcherFactory(listOf())
-        )
+            val schema = schemaProvider.schema().graphQLSchema
+            val build = GraphQL.newGraphQL(schema).build()
 
-        val schema = schemaProvider.schema()
-        val build = GraphQL.newGraphQL(schema).build()
-
-        val executionInput: ExecutionInput = ExecutionInput.newExecutionInput()
-            .query("{hello}")
-            .dataLoaderRegistry(dataLoaderRegistry)
-            .build()
-        val executionResult = build.execute(executionInput)
-        assert(executionResult.errors.size > 0)
+            val executionInput: ExecutionInput =
+                ExecutionInput
+                    .newExecutionInput()
+                    .query("{hello}")
+                    .dataLoaderRegistry(dataLoaderRegistry)
+                    .build()
+            val executionResult = build.execute(executionInput)
+            assert(executionResult.errors.size > 0)
+        }
     }
 
     @Test
     fun getMappedDataLoader() {
-        every { applicationContextMock.getBeansWithAnnotation(DgsComponent::class.java) } returns mapOf(Pair("helloFetcher", helloFetcherMapped))
-        every { applicationContextMock.getBeansWithAnnotation(DgsDataLoader::class.java) } returns mapOf(Pair("helloLoader", ExampleMappedBatchLoader()))
-        every { applicationContextMock.getBeansWithAnnotation(DgsDirective::class.java) } returns emptyMap()
-        val provider = DgsDataLoaderProvider(applicationContextMock)
-        provider.findDataLoaders()
-        val dataLoaderRegistry = provider.buildRegistry()
+        contextRunner.withBeans(HelloFetcherMapped::class, ExampleMappedBatchLoader::class).run { context ->
 
-        val schemaProvider = DgsSchemaProvider(
-            applicationContext = applicationContextMock,
-            federationResolver = Optional.empty(),
-            existingTypeDefinitionRegistry = Optional.empty(),
-            methodDataFetcherFactory = MethodDataFetcherFactory(listOf(DataFetchingEnvironmentArgumentResolver()))
-        )
+            val provider = DgsDataLoaderProvider(context)
+            provider.findDataLoaders()
+            val dataLoaderRegistry = provider.buildRegistry()
 
-        val schema = schemaProvider.schema()
-        val build = GraphQL.newGraphQL(schema).build()
+            val schemaProvider =
+                DgsSchemaProvider(
+                    applicationContext = context,
+                    federationResolver = Optional.empty(),
+                    existingTypeDefinitionRegistry = Optional.empty(),
+                    methodDataFetcherFactory = MethodDataFetcherFactory(listOf(DataFetchingEnvironmentArgumentResolver(context))),
+                )
 
-        val executionInput: ExecutionInput = ExecutionInput.newExecutionInput()
-            .query("{hello}")
-            .dataLoaderRegistry(dataLoaderRegistry)
-            .build()
-        val executionResult = build.execute(executionInput)
-        Assertions.assertTrue(executionResult.isDataPresent)
-        val result = executionResult.getData() as Map<String, String>
-        Assertions.assertEquals("C", result["hello"])
+            val schema = schemaProvider.schema().graphQLSchema
+            val build = GraphQL.newGraphQL(schema).build()
+
+            val executionInput: ExecutionInput =
+                ExecutionInput
+                    .newExecutionInput()
+                    .query("{hello}")
+                    .dataLoaderRegistry(dataLoaderRegistry)
+                    .build()
+            val executionResult = build.execute(executionInput)
+            Assertions.assertTrue(executionResult.isDataPresent)
+            val result = executionResult.getData() as Map<String, String>
+            Assertions.assertEquals("C", result["hello"])
+        }
     }
 
     @Test
     fun getMappedDataLoaderFromField() {
-        every { applicationContextMock.getBeansWithAnnotation(DgsDataLoader::class.java) } returns emptyMap()
-        every { applicationContextMock.getBeansWithAnnotation(DgsDirective::class.java) } returns emptyMap()
-        every { applicationContextMock.getBeansWithAnnotation(DgsComponent::class.java) } returns mapOf(Pair("helloFetcher", helloFetcherWithFieldMapped), Pair("helloLoader", ExampleMappedBatchLoaderFromField()))
+        contextRunner.withBeans(HelloFetcherWithFieldMapped::class, ExampleMappedBatchLoaderFromField::class).run { context ->
+            val provider = DgsDataLoaderProvider(context)
+            provider.findDataLoaders()
+            val dataLoaderRegistry = provider.buildRegistry()
 
-        val provider = DgsDataLoaderProvider(applicationContextMock)
-        provider.findDataLoaders()
-        val dataLoaderRegistry = provider.buildRegistry()
+            val schemaProvider =
+                DgsSchemaProvider(
+                    applicationContext = context,
+                    federationResolver = Optional.empty(),
+                    existingTypeDefinitionRegistry = Optional.empty(),
+                    methodDataFetcherFactory = MethodDataFetcherFactory(listOf(DataFetchingEnvironmentArgumentResolver(context))),
+                )
 
-        val schemaProvider = DgsSchemaProvider(
-            applicationContext = applicationContextMock,
-            federationResolver = Optional.empty(),
-            existingTypeDefinitionRegistry = Optional.empty(),
-            methodDataFetcherFactory = MethodDataFetcherFactory(listOf(DataFetchingEnvironmentArgumentResolver()))
-        )
+            val schema = schemaProvider.schema().graphQLSchema
+            val build = GraphQL.newGraphQL(schema).build()
 
-        val schema = schemaProvider.schema()
-        val build = GraphQL.newGraphQL(schema).build()
+            val executionInput: ExecutionInput =
+                ExecutionInput
+                    .newExecutionInput()
+                    .query("{hello}")
+                    .dataLoaderRegistry(dataLoaderRegistry)
+                    .build()
+            val executionResult = build.execute(executionInput)
+            Assertions.assertTrue(executionResult.isDataPresent)
+            val result = executionResult.getData() as Map<String, String>
+            Assertions.assertEquals("C", result["hello"])
+        }
+    }
 
-        val executionInput: ExecutionInput = ExecutionInput.newExecutionInput()
-            .query("{hello}")
-            .dataLoaderRegistry(dataLoaderRegistry)
-            .build()
-        val executionResult = build.execute(executionInput)
-        Assertions.assertTrue(executionResult.isDataPresent)
-        val result = executionResult.getData() as Map<String, String>
-        Assertions.assertEquals("C", result["hello"])
+    private fun ApplicationContextRunner.withBeans(vararg beanClasses: KClass<*>): ApplicationContextRunner {
+        var context = this
+        for (klazz in beanClasses) {
+            context = context.withBean(klazz.java)
+        }
+        return context
     }
 }
