@@ -18,6 +18,7 @@ package com.netflix.graphql.dgs.client
 
 import com.fasterxml.jackson.module.kotlin.jacksonObjectMapper
 import com.netflix.graphql.types.subscription.QueryPayload
+import org.intellij.lang.annotations.Language
 import org.springframework.http.MediaType
 import org.springframework.web.reactive.function.client.WebClient
 import org.springframework.web.reactive.function.client.toEntityFlux
@@ -30,24 +31,33 @@ import java.util.*
  * This client can be used for servers which are following the subscriptions-transport-sse specification, which can be found here:
  * https://github.com/CodeCommission/subscriptions-transport-sse
  */
-class SSESubscriptionGraphQLClient(private val url: String, private val webClient: WebClient) : ReactiveGraphQLClient {
-
+@Deprecated(
+    "This client uses the obsolete subscriptions-transport-sse protocol. Use GraphqlSSESubscriptionGraphQLClient to use the newer graphql-sse spec https://github.com/graphql/graphql-over-http/blob/d51ae80d62b5fd8802a3383793f01bdf306e8290/rfcs/GraphQLOverSSE.md.",
+    ReplaceWith("GraphqlSSESubscriptionGraphQLClient"),
+    DeprecationLevel.WARNING,
+)
+class SSESubscriptionGraphQLClient(
+    private val url: String,
+    private val webClient: WebClient,
+) : ReactiveGraphQLClient {
     private val mapper = jacksonObjectMapper()
 
-    override fun reactiveExecuteQuery(query: String, variables: Map<String, Any>): Flux<GraphQLResponse> {
-        return reactiveExecuteQuery(query, variables, null)
-    }
+    override fun reactiveExecuteQuery(
+        @Language("graphql") query: String,
+        variables: Map<String, Any>,
+    ): Flux<GraphQLResponse> = reactiveExecuteQuery(query, variables, null)
 
     override fun reactiveExecuteQuery(
-        query: String,
+        @Language("graphql") query: String,
         variables: Map<String, Any>,
-        operationName: String?
+        operationName: String?,
     ): Flux<GraphQLResponse> {
         val queryPayload = QueryPayload(variables, emptyMap(), operationName, query)
 
         val jsonPayload = mapper.writeValueAsString(queryPayload)
 
-        return webClient.get()
+        return webClient
+            .get()
             .uri("$url?query={query}", mapOf("query" to encodeQuery(jsonPayload)))
             .accept(MediaType.TEXT_EVENT_STREAM)
             .retrieve()
@@ -56,11 +66,10 @@ class SSESubscriptionGraphQLClient(private val url: String, private val webClien
                 val headers = response.headers
                 response.body?.map { body -> GraphQLResponse(json = body, headers = headers) }
                     ?: Flux.empty()
-            }
-            .publishOn(Schedulers.single())
+            }.publishOn(Schedulers.single())
     }
 
-    private fun encodeQuery(query: String): String? {
-        return Base64.getEncoder().encodeToString(query.toByteArray(StandardCharsets.UTF_8))
-    }
+    private fun encodeQuery(
+        @Language("graphql") query: String,
+    ): String? = Base64.getEncoder().encodeToString(query.toByteArray(StandardCharsets.UTF_8))
 }

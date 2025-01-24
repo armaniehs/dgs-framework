@@ -19,9 +19,7 @@ package com.netflix.graphql.dgs.client
 import com.netflix.graphql.dgs.DgsComponent
 import com.netflix.graphql.dgs.DgsQuery
 import com.netflix.graphql.dgs.DgsTypeDefinitionRegistry
-import com.netflix.graphql.dgs.autoconfig.DgsAutoConfiguration
-import com.netflix.graphql.dgs.subscriptions.graphql.sse.DgsGraphQLSSEAutoConfig
-import com.netflix.graphql.dgs.webmvc.autoconfigure.DgsWebMvcAutoConfiguration
+import com.netflix.graphql.dgs.test.EnableDgsTest
 import graphql.language.FieldDefinition
 import graphql.language.ObjectTypeDefinition
 import graphql.language.TypeName
@@ -29,7 +27,6 @@ import graphql.schema.idl.TypeDefinitionRegistry
 import org.assertj.core.api.Assertions.assertThat
 import org.junit.jupiter.api.BeforeEach
 import org.junit.jupiter.api.Test
-import org.springframework.boot.autoconfigure.EnableAutoConfiguration
 import org.springframework.boot.autoconfigure.SpringBootApplication
 import org.springframework.boot.test.context.SpringBootTest
 import org.springframework.boot.test.web.server.LocalServerPort
@@ -39,12 +36,11 @@ import org.springframework.http.HttpMethod
 import org.springframework.web.client.RestTemplate
 
 @SpringBootTest(
-    classes = [DgsAutoConfiguration::class, DgsWebMvcAutoConfiguration::class, WebClientGraphQLClientTest.TestApp::class],
-    webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT
+    classes = [WebClientGraphQLClientTest.TestApp::class],
+    webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT,
 )
-@EnableAutoConfiguration(exclude = [DgsGraphQLSSEAutoConfig::class])
+@EnableDgsTest
 class CustomGraphQLClientTest {
-
     @Suppress("PLATFORM_CLASS_MAPPED_TO_KOTLIN")
     @LocalServerPort
     lateinit var port: Integer
@@ -54,13 +50,14 @@ class CustomGraphQLClientTest {
 
     @BeforeEach
     fun before() {
-        client = GraphQLClient.createCustom("http://localhost:$port/graphql") { url, headers, body ->
-            val httpHeaders = HttpHeaders()
-            headers.forEach { httpHeaders.addAll(it.key, it.value) }
+        client =
+            GraphQLClient.createCustom("http://localhost:$port/graphql") { url, headers, body ->
+                val httpHeaders = HttpHeaders()
+                headers.forEach { httpHeaders.addAll(it.key, it.value) }
 
-            val exchange = restTemplate.exchange(url, HttpMethod.POST, HttpEntity(body, httpHeaders), String::class.java)
-            HttpResponse(exchange.statusCodeValue, exchange.body)
-        }
+                val exchange = restTemplate.exchange(url, HttpMethod.POST, HttpEntity(body, httpHeaders), String::class.java)
+                HttpResponse(exchange.statusCode.value(), exchange.body)
+            }
     }
 
     @Test
@@ -77,34 +74,34 @@ class CustomGraphQLClientTest {
 
     @SpringBootApplication
     internal open class TestApp {
-
         @DgsComponent
         class SubscriptionDataFetcher {
             @DgsQuery
-            fun hello(): String {
-                return "Hi!"
-            }
+            fun hello(): String = "Hi!"
 
             @DgsQuery
-            fun error(): String {
-                throw RuntimeException("Broken!")
-            }
+            fun error(): String = throw RuntimeException("Broken!")
 
             @DgsTypeDefinitionRegistry
             fun typeDefinitionRegistry(): TypeDefinitionRegistry {
                 val newRegistry = TypeDefinitionRegistry()
                 newRegistry.add(
-                    ObjectTypeDefinition.newObjectTypeDefinition().name("Query")
+                    ObjectTypeDefinition
+                        .newObjectTypeDefinition()
+                        .name("Query")
                         .fieldDefinition(
-                            FieldDefinition.newFieldDefinition()
+                            FieldDefinition
+                                .newFieldDefinition()
                                 .name("hello")
-                                .type(TypeName("String")).build()
+                                .type(TypeName("String"))
+                                .build(),
                         ).fieldDefinition(
-                            FieldDefinition.newFieldDefinition()
+                            FieldDefinition
+                                .newFieldDefinition()
                                 .name("error")
-                                .type(TypeName("String")).build()
-                        )
-                        .build()
+                                .type(TypeName("String"))
+                                .build(),
+                        ).build(),
                 )
                 return newRegistry
             }

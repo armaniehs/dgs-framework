@@ -24,33 +24,25 @@ import graphql.ExecutionResult
 import graphql.execution.instrumentation.parameters.InstrumentationExecutionParameters
 import graphql.execution.instrumentation.parameters.InstrumentationFieldFetchParameters
 import io.micrometer.core.instrument.Tag
-import io.micrometer.core.instrument.Tags
 import java.util.*
 
 class DgsGraphQLCollatedMetricsTagsProvider(
     private val contextualTagCustomizer: Collection<DgsContextualTagCustomizer> = Collections.emptyList(),
     private val executionTagCustomizer: Collection<DgsExecutionTagCustomizer> = Collections.emptyList(),
-    private val fieldFetchTagCustomizer: Collection<DgsFieldFetchTagCustomizer> = Collections.emptyList()
+    private val fieldFetchTagCustomizer: Collection<DgsFieldFetchTagCustomizer> = Collections.emptyList(),
 ) : DgsGraphQLMetricsTagsProvider {
-
-    override fun getContextualTags(): Iterable<Tag> {
-        return Tags.of(contextualTagCustomizer.flatMap { it.getContextualTags() })
-    }
+    override fun getContextualTags(): Iterable<Tag> = contextualTagCustomizer.flatMap { it.getContextualTags() }
 
     override fun getExecutionTags(
         state: DgsGraphQLMetricsInstrumentation.MetricsInstrumentationState,
         parameters: InstrumentationExecutionParameters,
         result: ExecutionResult,
-        exception: Throwable?
-    ): Iterable<Tag> {
-        return Tags.of(executionTagCustomizer.flatMap { it.getExecutionTags(state, parameters, result, exception) })
-    }
+        exception: Throwable?,
+    ): Iterable<Tag> = executionTagCustomizer.flatMap { it.getExecutionTags(state, parameters, result, exception) }
 
     override fun getFieldFetchTags(
         state: DgsGraphQLMetricsInstrumentation.MetricsInstrumentationState,
         parameters: InstrumentationFieldFetchParameters,
-        exception: Throwable?
-    ): Iterable<Tag> {
-        return Tags.of(fieldFetchTagCustomizer.flatMap { it.getFieldFetchTags(state, parameters, exception) })
-    }
+        exception: Throwable?,
+    ): Iterable<Tag> = fieldFetchTagCustomizer.flatMap { it.getFieldFetchTags(state, parameters, exception) }
 }

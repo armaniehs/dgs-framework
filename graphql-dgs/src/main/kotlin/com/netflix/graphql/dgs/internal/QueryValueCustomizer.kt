@@ -16,6 +16,10 @@
 
 package com.netflix.graphql.dgs.internal
 
+import org.intellij.lang.annotations.Language
+
 fun interface QueryValueCustomizer {
-    fun apply(query: String?): String?
+    fun apply(
+        @Language("graphql") query: String?,
+    ): String?
 }
