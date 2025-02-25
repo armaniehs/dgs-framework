@@ -1,0 +1,2 @@
+com.netflix.graphql.dgs.springgraphql.autoconfig.DgsSpringGraphQLAutoConfiguration
+org.springframework.boot.autoconfigure.graphql.GraphQlAutoConfiguration

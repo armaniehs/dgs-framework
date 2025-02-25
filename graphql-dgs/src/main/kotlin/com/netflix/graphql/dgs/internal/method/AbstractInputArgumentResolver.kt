@@ -24,12 +24,15 @@ import org.slf4j.LoggerFactory
 import org.springframework.core.MethodParameter
 import org.springframework.core.convert.TypeDescriptor
 import org.springframework.core.convert.support.DefaultConversionService
-import java.util.*
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.ConcurrentMap
+import kotlin.reflect.KParameter
+import kotlin.reflect.jvm.jvmErasure
+import kotlin.reflect.jvm.kotlinFunction
 
-abstract class AbstractInputArgumentResolver(inputObjectMapper: InputObjectMapper) : ArgumentResolver {
-
+abstract class AbstractInputArgumentResolver(
+    inputObjectMapper: InputObjectMapper,
+) : ArgumentResolver {
     companion object {
         private val logger: Logger = LoggerFactory.getLogger(AbstractInputArgumentResolver::class.java)
     }
@@ -41,9 +44,26 @@ abstract class AbstractInputArgumentResolver(inputObjectMapper: InputObjectMappe
         conversionService.addConverter(InputObjectMapperConverter(inputObjectMapper))
     }
 
-    override fun resolveArgument(parameter: MethodParameter, dfe: DataFetchingEnvironment): Any? {
+    override fun resolveArgument(
+        parameter: MethodParameter,
+        dfe: DataFetchingEnvironment,
+    ): Any? {
         val argumentName = getArgumentName(parameter)
         val value = dfe.getArgument<Any?>(argumentName)
+
+        val kfunc = parameter.method?.kotlinFunction
+        if (kfunc != null) {
+            val parameterIdx =
+                if (kfunc.parameters.first().kind == KParameter.Kind.INSTANCE) {
+                    parameter.parameterIndex + 1
+                } else {
+                    parameter.parameterIndex
+                }
+            val param = kfunc.parameters[parameterIdx]
+            if (param.type.arguments.isEmpty() && param.type.jvmErasure.isInstance(value)) {
+                return value
+            }
+        }
 
         val typeDescriptor = TypeDescriptor(parameter)
         val convertedValue = convertValue(value, typeDescriptor)
@@ -51,14 +71,14 @@ abstract class AbstractInputArgumentResolver(inputObjectMapper: InputObjectMappe
         if (convertedValue == null && dfe.fieldDefinition.arguments.none { it.name == argumentName }) {
             logger.warn(
                 "Unknown argument '{}'",
-                argumentName
+                argumentName,
             )
         }
 
         return convertedValue
     }
 
-    protected abstract fun resolveArgumentName(parameter: MethodParameter): String?
+    internal abstract fun resolveArgumentName(parameter: MethodParameter): String?
 
     private fun getArgumentName(parameter: MethodParameter): String? {
         val cachedName = argumentNameCache[parameter]
@@ -70,22 +90,12 @@ abstract class AbstractInputArgumentResolver(inputObjectMapper: InputObjectMappe
         return name
     }
 
-    private fun convertValue(source: Any?, target: TypeDescriptor): Any? {
-        if (source == null) {
-            return when (target.type) {
-                Optional::class.java -> Optional.empty<Any?>()
-                else -> null
-            }
-        }
-
+    private fun convertValue(
+        source: Any?,
+        target: TypeDescriptor,
+    ): Any? {
         if (target.resolvableType.isInstance(source)) {
             return source
-        }
-
-        if (target.type == Optional::class.java) {
-            val generic = target.resolvableType.getGeneric(0)
-            val elementType = TypeDescriptor(generic, null, null)
-            return Optional.ofNullable(convertValue(source, elementType))
         }
 
         val sourceType = TypeDescriptor.forObject(source)
@@ -93,6 +103,6 @@ abstract class AbstractInputArgumentResolver(inputObjectMapper: InputObjectMappe
             return conversionService.convert(source, sourceType, target)
         }
 
-        throw DgsInvalidInputArgumentException("Unable to convert from ${source.javaClass} to ${target.type}")
+        throw DgsInvalidInputArgumentException("Unable to convert from ${source?.javaClass} to ${target.type}")
     }
 }

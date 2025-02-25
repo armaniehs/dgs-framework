@@ -18,6 +18,7 @@ package com.netflix.graphql.dgs.client
 
 import com.fasterxml.jackson.module.kotlin.jacksonObjectMapper
 import com.netflix.graphql.types.subscription.QueryPayload
+import org.intellij.lang.annotations.Language
 import org.springframework.http.MediaType
 import org.springframework.web.reactive.function.client.WebClient
 import org.springframework.web.reactive.function.client.toEntityFlux
@@ -29,41 +30,47 @@ import reactor.core.scheduler.Schedulers
  * This client can be used for servers which are following the graphql-sse specification, which can be found here:
  * https://github.com/graphql/graphql-over-http/blob/d51ae80d62b5fd8802a3383793f01bdf306e8290/rfcs/GraphQLOverSSE.md
  */
-class GraphqlSSESubscriptionGraphQLClient(private val url: String, private val webClient: WebClient) : ReactiveGraphQLClient {
-
+class GraphqlSSESubscriptionGraphQLClient(
+    private val url: String,
+    private val webClient: WebClient,
+) : ReactiveGraphQLClient {
     private val mapper = jacksonObjectMapper()
 
-    override fun reactiveExecuteQuery(query: String, variables: Map<String, Any>): Flux<GraphQLResponse> {
-        return reactiveExecuteQuery(query, variables, null)
-    }
+    override fun reactiveExecuteQuery(
+        @Language("graphql") query: String,
+        variables: Map<String, Any>,
+    ): Flux<GraphQLResponse> = reactiveExecuteQuery(query, variables, null)
 
     override fun reactiveExecuteQuery(
-        query: String,
+        @Language("graphql") query: String,
         variables: Map<String, Any>,
-        operationName: String?
+        operationName: String?,
     ): Flux<GraphQLResponse> {
         val queryPayload = QueryPayload(variables, emptyMap(), operationName, query)
 
         val jsonPayload = mapper.writeValueAsString(queryPayload)
         val sink = Sinks.many().unicast().onBackpressureBuffer<GraphQLResponse>()
 
-        val dis = webClient.post()
-            .uri("$url")
-            .bodyValue(jsonPayload)
-            .accept(MediaType.TEXT_EVENT_STREAM)
-            .retrieve()
-            .toEntityFlux<String>()
-            .flatMapMany {
-                val headers = it.headers
-                it.body?.map { serverSentEvent ->
-                    sink.tryEmitNext(GraphQLResponse(json = serverSentEvent, headers = headers))
-                } ?: Flux.empty()
-            }.onErrorResume {
-                Flux.just(sink.tryEmitError(it))
-            }
-            .doFinally {
-                sink.tryEmitComplete()
-            }.subscribeOn(Schedulers.boundedElastic()).subscribe()
+        val dis =
+            webClient
+                .post()
+                .uri(url)
+                .contentType(MediaType.APPLICATION_JSON)
+                .bodyValue(jsonPayload)
+                .accept(MediaType.TEXT_EVENT_STREAM)
+                .retrieve()
+                .toEntityFlux<String>()
+                .flatMapMany {
+                    val headers = it.headers
+                    it.body?.map { serverSentEvent ->
+                        sink.tryEmitNext(GraphQLResponse(json = serverSentEvent, headers = headers))
+                    } ?: Flux.empty()
+                }.onErrorResume {
+                    Flux.just(sink.tryEmitError(it))
+                }.doFinally {
+                    sink.tryEmitComplete()
+                }.subscribeOn(Schedulers.boundedElastic())
+                .subscribe()
         return sink.asFlux().publishOn(Schedulers.single()).doFinally {
             dis.dispose()
         }

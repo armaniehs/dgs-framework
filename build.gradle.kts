@@ -15,6 +15,7 @@
  */
 
 import org.jetbrains.kotlin.gradle.tasks.KotlinCompile
+import java.net.URI
 
 buildscript {
     repositories {
@@ -28,12 +29,13 @@ plugins {
     `java-library`
     id("nebula.dependency-recommender") version "11.0.0"
 
-    id("nebula.netflixoss") version "11.1.1"
-    id("org.jmailen.kotlinter") version "3.11.1"
-    id("me.champeau.jmh") version "0.6.6"
+    id("nebula.netflixoss") version "11.4.0"
+    id("io.spring.dependency-management") version "1.1.6"
+
+    id("org.jmailen.kotlinter") version "5.0.+"
+    id("me.champeau.jmh") version "0.7.2"
 
     kotlin("jvm") version Versions.KOTLIN_VERSION
-    kotlin("kapt") version Versions.KOTLIN_VERSION
     idea
     eclipse
 }
@@ -52,20 +54,9 @@ allprojects {
     // and suggest an upgrade. The only exception currently are those defined
     // in buildSrc, most likely because the variables are used in plugins as well
     // as dependencies. e.g. KOTLIN_VERSION
-    extra["sb.version"] = "3.0.0"
-    val springBootVersion = extra["sb.version"] as String
-
-    dependencyRecommendations {
-        mavenBom(mapOf("module" to "org.jetbrains.kotlin:kotlin-bom:${Versions.KOTLIN_VERSION}"))
-
-        mavenBom(mapOf("module" to "org.springframework:spring-framework-bom:6.0.8"))
-        mavenBom(mapOf("module" to "org.springframework.boot:spring-boot-dependencies:${springBootVersion}"))
-        mavenBom(mapOf("module" to "org.springframework.security:spring-security-bom:6.0.1"))
-        mavenBom(mapOf("module" to "org.springframework.cloud:spring-cloud-dependencies:2022.0.0"))
-        mavenBom(mapOf("module" to "com.fasterxml.jackson:jackson-bom:2.14.2"))
-    }
+    extra["sb.version"] = "3.3.6"
+    extra["kotlin.version"] = Versions.KOTLIN_VERSION
 }
-
 val internalBomModules by extra(
     listOf(
         project(":graphql-dgs-platform"),
@@ -78,38 +69,24 @@ configure(subprojects.filterNot { it in internalBomModules }) {
     apply {
         plugin("java-library")
         plugin("kotlin")
-        plugin("kotlin-kapt")
         plugin("org.jmailen.kotlinter")
         plugin("me.champeau.jmh")
-    }
-
-    /**
-     * Remove once the following ticket is closed:
-     *  Kotlin-JVM: runtimeOnlyDependenciesMetadata, implementationDependenciesMetadata should be marked with isCanBeResolved=false
-     *  https://youtrack.jetbrains.com/issue/KT-34394
-     */
-    tasks.named("generateLock") {
-        doFirst {
-            project.configurations.filter { it.name.contains("DependenciesMetadata") }.forEach {
-                it.isCanBeResolved = false
-            }
-        }
+        plugin("io.spring.dependency-management")
     }
 
     val springBootVersion = extra["sb.version"] as String
-    val jmhVersion = "1.35"
+    val jmhVersion = "1.37"
+
+    dependencyManagement {
+        imports {
+            mavenBom("org.jetbrains.kotlin:kotlin-bom:${Versions.KOTLIN_VERSION}")
+            mavenBom("org.springframework.boot:spring-boot-dependencies:${springBootVersion}")
+        }
+    }
 
     dependencies {
         // Apply the BOM to applicable subprojects.
         api(platform(project(":graphql-dgs-platform")))
-        // Speed up processing of AutoConfig's produced by Spring Boot
-        annotationProcessor("org.springframework.boot:spring-boot-autoconfigure-processor")
-        // Produce Config Metadata for properties used in Spring Boot
-        annotationProcessor("org.springframework.boot:spring-boot-configuration-processor")
-        // Speed up processing of AutoConfig's produced by Spring Boot for Kotlin
-        kapt("org.springframework.boot:spring-boot-autoconfigure-processor:${springBootVersion}")
-        // Produce Config Metadata for properties used in Spring Boot for Kotlin
-        kapt("org.springframework.boot:spring-boot-configuration-processor:${springBootVersion}")
 
         // Sets the JMH version to use across modules.
         // Please refer to the following links for further reference.
@@ -121,22 +98,7 @@ configure(subprojects.filterNot { it in internalBomModules }) {
         testImplementation("org.springframework.boot:spring-boot-starter-test") {
             exclude(group = "org.junit.vintage", module = "junit-vintage-engine")
         }
-        testImplementation("io.mockk:mockk:1.13.2")
-    }
-
-    java {
-        toolchain {
-            languageVersion.set(JavaLanguageVersion.of(17))
-        }
-    }
-
-    kapt {
-        arguments {
-            arg(
-                "org.springframework.boot.configurationprocessor.additionalMetadataLocations",
-                "$projectDir/src/main/resources"
-            )
-        }
+        testImplementation("io.mockk:mockk:1.+")
     }
 
     jmh {
@@ -149,26 +111,12 @@ configure(subprojects.filterNot { it in internalBomModules }) {
         duplicateClassesStrategy.set(DuplicatesStrategy.EXCLUDE)
     }
 
-    tasks.withType<Jar>() {
+    tasks.withType<Jar> {
         duplicatesStrategy = DuplicatesStrategy.WARN
     }
 
     tasks.withType<JavaCompile>().configureEach {
         options.compilerArgs.addAll(listOf("-parameters", "-deprecation"))
-    }
-
-    tasks.withType<KotlinCompile>().configureEach {
-        kotlinOptions {
-            /*
-             * Prior to Kotlin 1.6 we had `jvm-default=enable`, 1.6.20 adds `-Xjvm-default=all-compatibility`
-             *   > .. generate compatibility stubs in the DefaultImpls classes.
-             *   > Compatibility stubs could be useful for library and runtime authors to keep backward binary
-             *   > compatibility for existing clients compiled against previous library versions.
-             * Ref. https://kotlinlang.org/docs/kotlin-reference.pdf
-             */
-            freeCompilerArgs = freeCompilerArgs + "-Xjvm-default=all-compatibility"
-            jvmTarget = "17"
-        }
     }
 
     tasks {
@@ -177,9 +125,21 @@ configure(subprojects.filterNot { it in internalBomModules }) {
         }
     }
 
+    tasks.withType<Javadoc>().configureEach {
+        options {
+            (this as CoreJavadocOptions).addStringOption("Xdoclint:none", "-quiet")
+        }
+    }
+
+    kotlin {
+        jvmToolchain(17)
+        compilerOptions {
+           javaParameters = true
+            freeCompilerArgs.addAll("-Xjvm-default=all-compatibility", "-java-parameters")
+        }
+    }
+
     kotlinter {
         reporters = arrayOf("checkstyle", "plain")
-        experimentalRules = false
-        disabledRules = arrayOf("no-wildcard-imports")
     }
 }

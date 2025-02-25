@@ -16,6 +16,8 @@
 
 package com.netflix.graphql.dgs.client
 
+import com.fasterxml.jackson.annotation.JsonAnyGetter
+import com.fasterxml.jackson.annotation.JsonAnySetter
 import com.fasterxml.jackson.annotation.JsonEnumDefaultValue
 import com.fasterxml.jackson.annotation.JsonIgnoreProperties
 import com.fasterxml.jackson.annotation.JsonProperty
@@ -28,7 +30,7 @@ data class GraphQLError(
     @JsonProperty val message: String = "",
     @JsonProperty val path: List<Any> = emptyList(),
     @JsonProperty val locations: List<Any> = emptyList(),
-    @JsonProperty val extensions: GraphQLErrorExtensions?
+    @JsonProperty val extensions: GraphQLErrorExtensions?,
 ) {
     val pathAsString = path.joinToString(".")
 }
@@ -39,13 +41,14 @@ data class GraphQLErrorExtensions(
     @JsonProperty val errorDetail: String? = null,
     @JsonProperty val origin: String = "",
     @JsonProperty val debugInfo: GraphQLErrorDebugInfo = GraphQLErrorDebugInfo(),
-    @JsonProperty val classification: String = ""
+    @JsonProperty val classification: Any = "",
 )
 
-@JsonIgnoreProperties(ignoreUnknown = true)
 data class GraphQLErrorDebugInfo(
     @JsonProperty val subquery: String = "",
-    @JsonProperty val variables: Map<String, Any> = emptyMap()
+    @JsonProperty val variables: Map<String, Any> = emptyMap(),
+    @field:JsonAnySetter @get:JsonAnyGetter
+    val additionalInformation: Map<String, Any?> = hashMapOf(),
 )
 
 /**
@@ -175,5 +178,5 @@ enum class ErrorType {
 
      HTTP Mapping: 400 Bad Request or 500 Internal Server Error
      */
-    FAILED_PRECONDITION
+    FAILED_PRECONDITION,
 }

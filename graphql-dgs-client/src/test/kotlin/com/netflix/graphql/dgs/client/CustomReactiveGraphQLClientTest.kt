@@ -19,16 +19,13 @@ package com.netflix.graphql.dgs.client
 import com.netflix.graphql.dgs.DgsComponent
 import com.netflix.graphql.dgs.DgsQuery
 import com.netflix.graphql.dgs.DgsTypeDefinitionRegistry
-import com.netflix.graphql.dgs.autoconfig.DgsAutoConfiguration
-import com.netflix.graphql.dgs.subscriptions.graphql.sse.DgsGraphQLSSEAutoConfig
-import com.netflix.graphql.dgs.webmvc.autoconfigure.DgsWebMvcAutoConfiguration
+import com.netflix.graphql.dgs.test.EnableDgsTest
 import graphql.language.FieldDefinition
 import graphql.language.ObjectTypeDefinition
 import graphql.language.TypeName
 import graphql.schema.idl.TypeDefinitionRegistry
 import org.junit.jupiter.api.BeforeEach
 import org.junit.jupiter.api.Test
-import org.springframework.boot.autoconfigure.EnableAutoConfiguration
 import org.springframework.boot.autoconfigure.SpringBootApplication
 import org.springframework.boot.test.context.SpringBootTest
 import org.springframework.boot.test.web.server.LocalServerPort
@@ -37,12 +34,11 @@ import org.springframework.web.reactive.function.client.toEntity
 import reactor.test.StepVerifier
 
 @SpringBootTest(
-    classes = [DgsAutoConfiguration::class, DgsWebMvcAutoConfiguration::class, WebClientGraphQLClientTest.TestApp::class],
-    webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT
+    classes = [WebClientGraphQLClientTest.TestApp::class],
+    webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT,
 )
-@EnableAutoConfiguration(exclude = [DgsGraphQLSSEAutoConfig::class])
+@EnableDgsTest
 class CustomReactiveGraphQLClientTest {
-
     @LocalServerPort
     var port: Int? = null
     lateinit var client: CustomMonoGraphQLClient
@@ -50,28 +46,31 @@ class CustomReactiveGraphQLClientTest {
     @BeforeEach
     fun setup() {
         requireNotNull(port) { "port not set" }
-        client = MonoGraphQLClient.createCustomReactive("http://localhost:$port/graphql") { url, _, body ->
-            WebClient.create(url)
-                .post()
-                .bodyValue(body)
-                .headers { headers -> headers.addAll(GraphQLClients.defaultHeaders) }
-                .retrieve()
-                .toEntity<String>()
-                .map { response ->
-                    HttpResponse(
-                        statusCode = response.statusCodeValue,
-                        body = response.body,
-                        headers = response.headers
-                    )
-                }
-        }
+        client =
+            MonoGraphQLClient.createCustomReactive("http://localhost:$port/graphql") { url, _, body ->
+                WebClient
+                    .create(url)
+                    .post()
+                    .bodyValue(body)
+                    .headers { headers -> headers.addAll(GraphQLClients.defaultHeaders) }
+                    .retrieve()
+                    .toEntity<String>()
+                    .map { response ->
+                        HttpResponse(
+                            statusCode = response.statusCode.value(),
+                            body = response.body,
+                            headers = response.headers,
+                        )
+                    }
+            }
     }
 
     @Test
     fun `Successful graphql response`() {
         val result = client.reactiveExecuteQuery("{hello}").map { r -> r.extractValue<String>("hello") }
 
-        StepVerifier.create(result)
+        StepVerifier
+            .create(result)
             .expectNext("Hi!")
             .verifyComplete()
     }
@@ -80,41 +79,42 @@ class CustomReactiveGraphQLClientTest {
     fun `Graphql errors should be handled`() {
         val errors = client.reactiveExecuteQuery("{error}").map { r -> r.errors }
 
-        StepVerifier.create(errors)
+        StepVerifier
+            .create(errors)
             .expectNextMatches { it.size == 1 && it[0].message.contains("Broken!") }
             .verifyComplete()
     }
 
     @SpringBootApplication
     internal open class TestApp {
-
         @DgsComponent
         class SubscriptionDataFetcher {
             @DgsQuery
-            fun hello(): String {
-                return "Hi!"
-            }
+            fun hello(): String = "Hi!"
 
             @DgsQuery
-            fun error(): String {
-                throw RuntimeException("Broken!")
-            }
+            fun error(): String = throw RuntimeException("Broken!")
 
             @DgsTypeDefinitionRegistry
             fun typeDefinitionRegistry(): TypeDefinitionRegistry {
                 val newRegistry = TypeDefinitionRegistry()
                 newRegistry.add(
-                    ObjectTypeDefinition.newObjectTypeDefinition().name("Query")
+                    ObjectTypeDefinition
+                        .newObjectTypeDefinition()
+                        .name("Query")
                         .fieldDefinition(
-                            FieldDefinition.newFieldDefinition()
+                            FieldDefinition
+                                .newFieldDefinition()
                                 .name("hello")
-                                .type(TypeName("String")).build()
+                                .type(TypeName("String"))
+                                .build(),
                         ).fieldDefinition(
-                            FieldDefinition.newFieldDefinition()
+                            FieldDefinition
+                                .newFieldDefinition()
                                 .name("error")
-                                .type(TypeName("String")).build()
-                        )
-                        .build()
+                                .type(TypeName("String"))
+                                .build(),
+                        ).build(),
                 )
                 return newRegistry
             }

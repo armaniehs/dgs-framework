@@ -16,28 +16,39 @@
 
 package com.netflix.graphql.dgs.client
 
+import com.fasterxml.jackson.databind.ObjectMapper
+import org.intellij.lang.annotations.Language
+
 /**
  * Blocking implementation of a GraphQL client.
  * The user is responsible for doing the actual HTTP request, making this pluggable with any HTTP client.
  * For a more convenient option, use [WebClientGraphQLClient] instead.
  */
-class CustomGraphQLClient(private val url: String, private val requestExecutor: RequestExecutor) : GraphQLClient {
-    override fun executeQuery(query: String): GraphQLResponse {
-        return executeQuery(query, emptyMap(), null)
-    }
+class CustomGraphQLClient(
+    private val url: String,
+    private val requestExecutor: RequestExecutor,
+    private val mapper: ObjectMapper,
+) : GraphQLClient {
+    constructor(url: String, requestExecutor: RequestExecutor) : this(url, requestExecutor, GraphQLClients.objectMapper)
 
-    override fun executeQuery(query: String, variables: Map<String, Any>): GraphQLResponse {
-        return executeQuery(query, variables, null)
-    }
+    override fun executeQuery(
+        @Language("graphql") query: String,
+    ): GraphQLResponse = executeQuery(query, emptyMap(), null)
 
-    override fun executeQuery(query: String, variables: Map<String, Any>, operationName: String?): GraphQLResponse {
-        val serializedRequest = GraphQLClients.objectMapper.writeValueAsString(
-            Request(
-                query,
-                variables,
-                operationName
+    override fun executeQuery(
+        @Language("graphql") query: String,
+        variables: Map<String, Any>,
+    ): GraphQLResponse = executeQuery(query, variables, null)
+
+    override fun executeQuery(
+        @Language("graphql") query: String,
+        variables: Map<String, Any>,
+        operationName: String?,
+    ): GraphQLResponse {
+        val serializedRequest =
+            mapper.writeValueAsString(
+                GraphQLClients.toRequestMap(query = query, operationName = operationName, variables = variables),
             )
-        )
 
         val response = requestExecutor.execute(url, GraphQLClients.defaultHeaders, serializedRequest)
         return GraphQLClients.handleResponse(response, serializedRequest, url)
